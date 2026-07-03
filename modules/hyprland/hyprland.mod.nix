@@ -24,35 +24,74 @@
         # NOT register Hyprland with UWSM or add a session entry (confirmed
         # by reading nixos/modules/programs/wayland/hyprland.nix: the
         # `withUWSM` mkIf block is just `{ programs.uwsm.enable = true; }`).
-        # The `waylandCompositors.hyprland` entry below is what actually
-        # generates the "Hyprland (UWSM)" wayland-sessions/*.desktop entry
-        # (`Exec = uwsm start -F -- <binPath>`); without it the greeter would
-        # have no way to launch Hyprland under UWSM at all. The original,
-        # non-UWSM "Hyprland" entry (from `services.displayManager.sessionPackages`,
-        # set by the base hyprland.nix module) stays installed alongside it —
-        # withUWSM adds a session, it does not replace one.
         programs.hyprland.withUWSM = true;
-        programs.uwsm.waylandCompositors.hyprland = {
-          prettyName = "Hyprland";
-          comment = "Hyprland compositor managed by UWSM";
-          # Point at start-hyprland, not the raw Hyprland binary. Hyprland's
-          # main() only clears its "started without start-hyprland" warning
-          # when handed a valid `--watchdog-fd` (src/main.cpp: `watchdogOk =
-          # watchdogFd > 0`); that fd is a pipe start-hyprland itself creates
-          # and passes when it forks+execs Hyprland, so no env var can
-          # substitute for it. start-hyprland is otherwise just a crash-restart
-          # watchdog around Hyprland (start/src/core/Instance.cpp: fork/exec
-          # loop, `while(true)` restart-on-unclean-exit) — it does no
-          # systemd/target manipulation of its own, so nesting it inside the
-          # uwsm-managed unit is safe. This matches upstream guidance: the
-          # Hyprland wiki's Systemd-start page (linked from nixpkgs'
-          # `programs.hyprland.withUWSM` description) and maintainer fufexan
-          # (github.com/hyprwm/Hyprland/discussions/12661) both say to launch
-          # `start-hyprland` under uwsm rather than the bare binary; suppressing
-          # the warning via `misc:disable_watchdog_warning` is called out there
-          # as the less-recommended alternative.
-          binPath = lib.getExe' pkgs.hyprland "start-hyprland";
-        };
+
+        # `programs.uwsm.waylandCompositors.<name>` (nixos/modules/programs/wayland/uwsm.nix,
+        # `mk_uwsm_desktop_entry`) generates
+        # `Exec=${uwsm} start -F -- ${binPath} ${extraArgs}`: everything after
+        # `--` is an argument to the *compositor*, not to `uwsm start`, and the
+        # module gives no way to inject flags before `--`. That entry (via
+        # `binPath = start-hyprland`) is exactly what caused the bug: with no
+        # `-D`/`--desktop-names` given to `uwsm start`, uwsm seeds
+        # XDG_CURRENT_DESKTOP from the launched binary's own name
+        # (`start-hyprland`), and its bundled quirk plugin
+        # (uwsm-plugins/start_hyprland.sh -> quirks_hyprland) then *appends*
+        # `:Hyprland` rather than replacing it, producing
+        # "start-hyprland:Hyprland". Hyprland's own startup check
+        # (src/Compositor.cpp, `performUserChecks`) does an exact-string
+        # comparison against literal "Hyprland" (not a substring/prefix
+        # check), so that combined value trips the "managed externally"
+        # notification every session. There is no `waylandCompositors`
+        # suboption (no `-D`, `desktopNames`, `extraFlags` before `--`, etc.)
+        # to fix this from within the nixpkgs module, so this bypasses it
+        # entirely and writes the wayland-sessions desktop entry directly,
+        # passing `-D Hyprland` to `uwsm start` itself: that seeds
+        # XDG_CURRENT_DESKTOP="Hyprland" up front, and the quirk plugin's own
+        # `case "A:${XDG_CURRENT_DESKTOP}:Z" in *:Hyprland:*) true ;;` guard
+        # then sees "Hyprland" already present and leaves it untouched — the
+        # value Hyprland's check requires, verbatim.
+        #
+        # This also replaces (not supplements) the plain, non-UWSM "Hyprland"
+        # entry that `programs.hyprland.enable` installs via
+        # `services.displayManager.sessionPackages = [ cfg.package ]`
+        # (nixos/modules/programs/wayland/hyprland.nix) — `mkForce` here drops
+        # that entry so the greeter offers exactly one Hyprland session.
+        services.displayManager.sessionPackages = lib.mkForce [
+          (pkgs.writeTextFile {
+            name = "hyprland-uwsm";
+            text = ''
+              [Desktop Entry]
+              Name=Hyprland
+              Comment=Hyprland compositor managed by UWSM
+              Exec=${lib.getExe pkgs.uwsm} start -F -D Hyprland -- ${lib.getExe' pkgs.hyprland "start-hyprland"}
+              Type=Application
+            '';
+            # Point at start-hyprland, not the raw Hyprland binary. Hyprland's
+            # main() only clears its "started without start-hyprland" warning
+            # when handed a valid `--watchdog-fd` (src/main.cpp: `watchdogOk =
+            # watchdogFd > 0`); that fd is a pipe start-hyprland itself
+            # creates and passes when it forks+execs Hyprland, so no env var
+            # can substitute for it. start-hyprland is otherwise just a
+            # crash-restart watchdog around Hyprland (start/src/core/Instance.cpp:
+            # fork/exec loop, `while(true)` restart-on-unclean-exit) — it does
+            # no systemd/target manipulation of its own, so nesting it inside
+            # the uwsm-managed unit is safe. This matches upstream guidance:
+            # the Hyprland wiki's Systemd-start page (linked from nixpkgs'
+            # `programs.hyprland.withUWSM` description) and maintainer
+            # fufexan (github.com/hyprwm/Hyprland/discussions/12661) both say
+            # to launch `start-hyprland` under uwsm rather than the bare
+            # binary; suppressing the warning via
+            # `misc:disable_watchdog_warning` is called out there as the
+            # less-recommended alternative.
+            destination = "/share/wayland-sessions/hyprland-uwsm.desktop";
+            derivationArgs = {
+              # Mirrors nixpkgs' own `mk_uwsm_desktop_entry` passthru so
+              # `services.displayManager.sessionPackages` can find the
+              # session id this package provides.
+              passthru.providedSessions = [ "hyprland-uwsm" ];
+            };
+          })
+        ];
 
         hardware.graphics.enable = true;
 
