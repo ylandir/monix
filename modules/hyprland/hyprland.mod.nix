@@ -276,6 +276,8 @@
 
                 follow_mouse = 1;
                 sensitivity = 0;
+                repeat_rate = 50;
+                repeat_delay = 200;
 
                 touchpad = {
                   natural_scroll = false;
