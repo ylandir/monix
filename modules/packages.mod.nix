@@ -58,10 +58,10 @@
         home.packages = [
           pkgs.brightnessctl
           pkgs.cliphist
+          pkgs.kdePackages.dolphin
           pkgs.hyprpicker
           pkgs.hyprshot
           pkgs.hugo
-          pkgs.nautilus
           pkgs.pamixer
           pkgs.pavucontrol
           pkgs.playerctl

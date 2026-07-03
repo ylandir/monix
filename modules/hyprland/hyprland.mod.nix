@@ -455,7 +455,7 @@
                   "Open RSS reader"
                   { }
                 )
-                (mkBind "SUPER + R" ''hl.dsp.exec_cmd("${getExe pkgs.nautilus} --new-window")''
+                (mkBind "SUPER + R" ''hl.dsp.exec_cmd("${getExe pkgs.kdePackages.dolphin} --new-window")''
                   "Open file manager"
                   { }
                 )
