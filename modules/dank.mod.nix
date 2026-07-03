@@ -28,6 +28,10 @@
           compositor.name = "hyprland";
         };
 
+        # Quickshell's battery service reads UPower; without the daemon the
+        # DMS bar always shows AC power.
+        services.upower.enable = true;
+
         # systemd user units don't inherit the session's XDG_DATA_DIRS on
         # NixOS; without it the DMS launcher finds no .desktop entries.
         systemd.user.services.dms.environment.XDG_DATA_DIRS =
