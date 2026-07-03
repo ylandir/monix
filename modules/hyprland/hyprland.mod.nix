@@ -399,6 +399,7 @@
                   "Show keybindings"
                   { }
                 )
+                (mkBind "SUPER + I" ''hl.dsp.exec_cmd("dms ipc call inhibit toggle")'' "Toggle idle inhibit" { })
 
                 (mkBind "SUPER + J" ''hl.dsp.layout("togglesplit")'' "Toggle split direction" { })
                 (mkBind "SUPER + P" ''hl.dsp.window.pseudo()'' "Toggle pseudotile" { })
