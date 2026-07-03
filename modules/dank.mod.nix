@@ -26,6 +26,22 @@
         programs.dank-material-shell.greeter = {
           enable = true;
           compositor.name = "hyprland";
+
+          # dms-greeter's built-in default Hyprland config disables the logo
+          # but not the splash text/quote, so it still flashes before the
+          # greeter UI renders. Passing customConfig REPLACES that default
+          # entirely (the greeter script only ever appends its own
+          # `exec-once = sh -c "$QS_CMD; hyprctl dispatch exit"` line after
+          # it), so we reproduce the default here and add
+          # disable_splash_rendering.
+          compositor.customConfig = ''
+            env = DMS_RUN_GREETER,1
+
+            misc {
+                disable_hyprland_logo = true
+                disable_splash_rendering = true
+            }
+          '';
         };
 
         # Quickshell's battery service reads UPower; without the daemon the
