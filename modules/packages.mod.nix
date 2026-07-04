@@ -1,49 +1,80 @@
 # Config-less packages, grouped into functional bundles (ncc's pattern). Tools
 # that carry configuration have their own concern files; Nix-workflow tools
 # (nh, nix-output-monitor) live in nix.mod.nix; fonts in fonts.mod.nix.
+#
+# System-scoped bundles are universal: available to root and every user on
+# both host classes. Home bundles gate themselves on isDesktop.
 {
-  # The CLI baseline: essential system tools. System-scoped, universal: available to root and to
-  # every user on both host classes. git is here (not only in the home git
-  # concern) because managing and rebuilding this flake repo requires it in
-  # root's PATH.
-  flake.nixosModules.packages-cli =
+  flake.nixosModules.packages-editors =
     { pkgs, ... }:
     {
       environment.variables.EDITOR = "nvim";
 
       environment.systemPackages = [
-        pkgs.curl
-        pkgs.dig
+        pkgs.helix
+        pkgs.neovim
+        pkgs.vim
+      ];
+    };
+
+  # Interactive CLI quality-of-life. nushell is here (not only a host's login
+  # shell setting) so the binary exists system-wide wherever a user picks it.
+  flake.nixosModules.packages-shell-utils =
+    { pkgs, ... }:
+    {
+      environment.systemPackages = [
         pkgs.eza
         pkgs.fd
         pkgs.fzf
-        pkgs.git
-        pkgs.gnumake
-        pkgs.helix
         pkgs.htop
-        pkgs.ipcalc
         pkgs.less
         pkgs.lf
-        pkgs.libnotify
-        pkgs.neovim
         pkgs.nushell
-        pkgs.p7zip
         pkgs.ripgrep
-        pkgs.rsync
         pkgs.tmux
-        pkgs.traceroute
         pkgs.tree
-        pkgs.unzip
-        pkgs.vim
+      ];
+    };
+
+  flake.nixosModules.packages-network-tools =
+    { pkgs, ... }:
+    {
+      environment.systemPackages = [
+        pkgs.curl
+        pkgs.dig
+        pkgs.ipcalc
+        pkgs.rsync
+        pkgs.traceroute
         pkgs.wget
+      ];
+    };
+
+  flake.nixosModules.packages-archives =
+    { pkgs, ... }:
+    {
+      environment.systemPackages = [
+        pkgs.p7zip
+        pkgs.unzip
         pkgs.xz
         pkgs.zip
         pkgs.zstd
       ];
     };
 
-  # The Hyprland session's loose utilities. hyprshot wraps its own grim/slurp dependencies.
-  flake.homeModules.packages-desktop =
+  # git is here (not only in the home git concern) because managing and
+  # rebuilding this flake repo requires it in root's PATH.
+  flake.nixosModules.packages-dev-tools =
+    { pkgs, ... }:
+    {
+      environment.systemPackages = [
+        pkgs.git
+        pkgs.gnumake
+      ];
+    };
+
+  # The Hyprland session's loose utilities. hyprshot wraps its own grim/slurp
+  # dependencies; libnotify provides notify-send for session scripts.
+  flake.homeModules.packages-desktop-utils =
     {
       lib,
       osConfig,
@@ -57,12 +88,10 @@
       config = mkIf osConfig.isDesktop {
         home.packages = [
           pkgs.brightnessctl
-          pkgs.claude-code
           pkgs.cliphist
-          pkgs.kdePackages.dolphin
           pkgs.hyprpicker
           pkgs.hyprshot
-          pkgs.hugo
+          pkgs.libnotify
           pkgs.pamixer
           pkgs.pavucontrol
           pkgs.playerctl
@@ -91,7 +120,28 @@
       config = mkIf osConfig.isDesktop {
         home.packages = [
           pkgs.brave
+          pkgs.kdePackages.dolphin
           pkgs.keepassxc
+        ];
+      };
+    };
+
+  # Authoring/build tools that only make sense on a workstation.
+  flake.homeModules.packages-dev-extras =
+    {
+      lib,
+      osConfig,
+      pkgs,
+      ...
+    }:
+    let
+      inherit (lib.modules) mkIf;
+    in
+    {
+      config = mkIf osConfig.isDesktop {
+        home.packages = [
+          pkgs.claude-code
+          pkgs.hugo
         ];
       };
     };
