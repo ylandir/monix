@@ -40,6 +40,11 @@
     inputs.nixpkgs.follows = "nixpkgs";
   };
 
+  inputs.nix4nvchad = {
+    url = "github:nix-community/nix4nvchad";
+    inputs.nixpkgs.follows = "nixpkgs";
+  };
+
   outputs =
     inputs:
     inputs.flake-parts.lib.mkFlake
