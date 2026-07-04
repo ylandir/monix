@@ -35,8 +35,11 @@
     inputs.darwin.follows = "";
   };
 
+  # master, not stable: v1.4.6/stable predate the fixes for Hyprland 0.55's
+  # Lua command socket (old-style `dispatch workspace N` strings are rejected,
+  # breaking DMS workspace clicking; fixed on master ~2026-05).
   inputs.dank-material-shell = {
-    url = "github:AvengeMedia/DankMaterialShell/stable";
+    url = "github:AvengeMedia/DankMaterialShell";
     inputs.nixpkgs.follows = "nixpkgs";
   };
 

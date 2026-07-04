@@ -12,7 +12,12 @@
 { inputs, ... }:
 {
   flake.nixosModules.dank =
-    { config, lib, ... }:
+    {
+      config,
+      lib,
+      pkgs,
+      ...
+    }:
     let
       inherit (lib.modules) mkIf;
       inherit (lib.lists) singleton;
@@ -22,6 +27,13 @@
 
       config = mkIf config.isDesktop {
         programs.dms-shell.enable = true;
+
+        # nixpkgs' dms-shell (1.4.6) predates Hyprland 0.55's Lua-only command
+        # socket: it dispatches old-style strings ("workspace 2"), which the
+        # socket rejects, so bar workspace clicking/scrolling silently fails.
+        # The flake's master build speaks the new API (hl.dsp.focus{...}).
+        programs.dms-shell.package =
+          inputs.dank-material-shell.packages.${pkgs.stdenv.hostPlatform.system}.dms-shell;
 
         programs.dank-material-shell.greeter = {
           enable = true;
