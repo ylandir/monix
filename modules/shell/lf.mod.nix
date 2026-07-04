@@ -10,6 +10,10 @@
       programs.lf = {
         enable = true;
 
+        # `w` spawns $SHELL by default, which is deliberately bash (POSIX
+        # login shell). The interactive shell is nushell, so point w there.
+        keybindings.w = "$" + "${pkgs.nushell}/bin/nu";
+
         commands.open = ''
           ''${{
             case $(${pkgs.file}/bin/file --mime-type -Lb "$f") in
