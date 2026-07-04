@@ -28,7 +28,6 @@
         pkgs.fzf
         pkgs.htop
         pkgs.less
-        pkgs.lf
         pkgs.nushell
         pkgs.ripgrep
         pkgs.tmux
