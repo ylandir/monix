@@ -20,15 +20,72 @@ in
         imports =
           attrValues self.commonModules
           ++ attrValues self.nixosModules
-          ++ [
-            inputs.nixos-hardware.nixosModules.framework-13-7040-amd
-            ./hardware-configuration.nix
-          ];
+          ++ singleton inputs.nixos-hardware.nixosModules.framework-13-7040-amd;
 
         # HOST CLASS
         isDesktop = true;
 
         nixpkgs.hostPlatform = "x86_64-linux";
+
+        # HARDWARE (was hardware-configuration.nix; quirks/power tuning come
+        # from the nixos-hardware framework module above)
+        boot.initrd.availableKernelModules = [
+          "nvme"
+          "xhci_pci"
+          "thunderbolt"
+          "usb_storage"
+          "uas"
+          "sd_mod"
+        ];
+        boot.kernelModules = [ "kvm-amd" ];
+        hardware.enableRedistributableFirmware = true;
+        hardware.cpu.amd.updateMicrocode = true;
+        networking.useDHCP = lib.mkDefault true;
+
+        # DISK (WD Black SN850X 2TB). Disko derives the mount config: /boot
+        # from the ESP, / from btrfs subvol @ inside LUKS (opened as
+        # /dev/mapper/cryptroot). Partlabels disk-main-boot/disk-main-luks are
+        # set by disko on a fresh format; the pre-disko install needed them
+        # set once by hand (sgdisk --change-name).
+        disko.devices.disk.main = {
+          device = "/dev/disk/by-id/nvme-WD_BLACK_SN850X_2000GB_24144X801841";
+          type = "disk";
+
+          content.type = "gpt";
+
+          content.partitions.boot = {
+            priority = 100;
+            size = "1G";
+            type = "EF00";
+
+            content = {
+              type = "filesystem";
+              format = "vfat";
+              mountpoint = "/boot";
+              mountOptions = [
+                "fmask=0077"
+                "dmask=0077"
+              ];
+            };
+          };
+
+          content.partitions.luks = {
+            priority = 200;
+            size = "100%";
+
+            content = {
+              type = "luks";
+              name = "cryptroot";
+
+              content = {
+                type = "btrfs";
+                subvolumes."@" = {
+                  mountpoint = "/";
+                };
+              };
+            };
+          };
+        };
 
         # POWER (Framework 13 AMD tuning carried over from fwork; amd_pstate
         # and the amdgpu PSR workaround come from nixos-hardware and are not
