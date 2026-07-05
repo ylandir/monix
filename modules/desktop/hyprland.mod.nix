@@ -235,6 +235,9 @@
               (mkEnv "HYPRCURSOR_THEME" "Bibata-Modern-Classic")
               (mkEnv "GDK_BACKEND" "wayland")
               (mkEnv "QT_QPA_PLATFORM" "wayland")
+              # qt6ct(-kde) so DMS's "Apply Qt Themes" colors reach Qt apps
+              # (see dank.mod.nix). Widget style itself is picked in qt6ct.
+              (mkEnv "QT_QPA_PLATFORMTHEME" "qt6ct")
               (mkEnv "SDL_VIDEODRIVER" "wayland")
               (mkEnv "MOZ_ENABLE_WAYLAND" "1")
               (mkEnv "ELECTRON_OZONE_PLATFORM_HINT" "wayland")
@@ -247,7 +250,8 @@
                 "/etc/profiles/per-user/${osConfig.primaryUser}/share:/run/current-system/sw/share"
               )
               (mkEnv "EDITOR" "nvim")
-              (mkEnv "GTK_THEME" "Adwaita:dark")
+              # adw-gtk3: the theme DMS's generated gtk.css is written against.
+              (mkEnv "GTK_THEME" "adw-gtk3-dark")
             ];
 
             # CORE CONFIG — one `hl.config({...})` call covering every category.

@@ -35,6 +35,20 @@
         programs.dms-shell.package =
           inputs.dank-material-shell.packages.${pkgs.stdenv.hostPlatform.system}.dms-shell;
 
+        # Wallpaper-synced app theming (Settings -> Theme & Colors -> "Apply
+        # GTK/Qt Themes"). enableDynamicTheming provides matugen; adw-gtk3 is
+        # the GTK theme DMS's generated gtk.css targets; kdePackages.qt6ct is
+        # the qt6ct-kde fork (plain qt6ct can't read the KColorScheme file DMS
+        # generates); qt5ct covers remaining Qt5 apps. DMS owns the generated
+        # files at runtime (gtk.css, qt5ct/qt6ct configs, color schemes) —
+        # nothing under home-manager may manage those paths.
+        programs.dms-shell.enableDynamicTheming = true;
+        environment.systemPackages = [
+          pkgs.adw-gtk3
+          pkgs.kdePackages.qt6ct
+          pkgs.libsForQt5.qt5ct
+        ];
+
         programs.dank-material-shell.greeter = {
           enable = true;
           compositor.name = "hyprland";
@@ -64,6 +78,10 @@
         # NixOS; without it the DMS launcher finds no .desktop entries.
         systemd.user.services.dms.environment.XDG_DATA_DIRS =
           "/etc/profiles/per-user/${config.primaryUser}/share:/run/current-system/sw/share";
+
+        # DMS's theming tab errors with "Missing Environment Variables" unless
+        # the shell process itself sees the Qt platform theme it manages.
+        systemd.user.services.dms.environment.QT_QPA_PLATFORMTHEME = "qt6ct";
       };
     };
 }
