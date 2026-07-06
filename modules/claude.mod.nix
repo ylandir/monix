@@ -27,7 +27,11 @@
 
             ## Autonomy
 
-            Never ask permission for read-only work — research, web lookups, code searches, spawning read-only agents. Just do it and report what you found. Asking is reserved for things that modify state or genuinely need a user decision (taste, scope, destructive actions).
+            Keep going by default. Stop to ask only when something is hard to undo (destructive actions, force-pushes, publishing), a real change in scope from what was asked, or a decision only the user can make (taste, priorities). Everything else — read-only work, research, reversible edits within the agreed task — just do it and report. Never ask permission for read-only work under any circumstances.
+
+            ## Verification before "done"
+
+            Before reporting a task complete, show the proof: the build output, the test run, the command result — whatever demonstrates it actually works, not just that the edit was made. If a step wasn't verified (couldn't run it, needs a reboot, needs hardware), say so explicitly instead of folding it into "done". This applies to subagents too: require proof in their prompts, and don't relay their "done" as verified unless it comes with evidence.
 
             ## Economics
 
