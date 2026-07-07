@@ -33,7 +33,7 @@
       inherit (lib.attrsets) listToAttrs nameValuePair optionalAttrs;
       inherit (lib.lists) concatMap singleton;
       inherit (lib.meta) getExe';
-      inherit (lib.modules) mkIf;
+      inherit (lib.modules) mkForce mkIf;
       inherit (lib.options) mkOption;
       inherit (lib.strings) concatMapStringsSep fixedWidthString optionalString;
       inherit (lib) types;
@@ -276,10 +276,15 @@
                   Group = "users";
                   WorkingDirectory = "/workspace";
                   # Units don't read /etc/set-environment; restate the proxy.
+                  # The Bash timeouts let a blocking ask-cockpit call outlive
+                  # Claude Code's 2-minute default tool timeout (guidance
+                  # takes minutes; killing the wait made agents re-ask).
                   Environment = [
                     "HTTP_PROXY=${proxyUrl}"
                     "HTTPS_PROXY=${proxyUrl}"
                     "NO_PROXY=127.0.0.1,localhost"
+                    "BASH_DEFAULT_TIMEOUT_MS=1200000"
+                    "BASH_MAX_TIMEOUT_MS=1800000"
                   ];
                 };
                 # The prompt may start with a front-matter block setting task
@@ -413,6 +418,9 @@
             (nameValuePair "microvm@${w.name}" {
               serviceConfig = {
                 Slice = "agents.slice";
+                # The drainer owns worker lifecycle; upstream's Restart=always
+                # (VMs as long-running services) would fight its stop/start.
+                Restart = mkForce "no";
                 # EPHEMERALITY — delete the volume images before every start;
                 # the runner's autoCreate recreates them blank (truncate +
                 # mkfs), so each boot is a clean slate.

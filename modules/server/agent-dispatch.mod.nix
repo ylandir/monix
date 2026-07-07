@@ -54,13 +54,32 @@
           };
           script = ''
             queue=${tasksDir}/queue
-            running=${tasksDir}/running
+            running=${tasksDir}/running/${worker}
             work=${work}
+
+            # ORDER MATTERS in the VM cycle: the share directory may only be
+            # recreated while the VM (and its virtiofsd) is stopped — pulling
+            # it out from under a live virtiofsd wedges it and the VM restart
+            # with it.
+            stop_vm() {
+              systemctl stop microvm@${worker}.service || true
+              systemctl reset-failed microvm@${worker}.service 2>/dev/null || true
+            }
 
             reset_work() {
               rm -rf "$work"
               install -d -m 0755 -o 1000 -g 100 "$work"
             }
+
+            # Recover tasks stranded by a previous drainer instance that died
+            # mid-task (host switch, failure): requeue them.
+            install -d "$running"
+            for stale in "$running"/*.md; do
+              if [ -e "$stale" ]; then
+                echo "requeueing stranded $(basename "$stale")"
+                mv "$stale" "$queue/"
+              fi
+            done
 
             while :; do
               set -- "$queue"/*.md
@@ -75,9 +94,17 @@
               fi
               echo "dispatching $id to ${worker}"
 
+              stop_vm
               reset_work
               install -m 0444 "$running/$id.md" "$work/prompt.md"
-              systemctl restart microvm@${worker}.service
+              if ! systemctl start microvm@${worker}.service; then
+                echo "worker ${worker} failed to start; filing $id as failed"
+                stop_vm
+                out=${tasksDir}/failed/$id
+                install -d "$out"
+                mv "$running/$id.md" "$out/prompt.md"
+                continue
+              fi
 
               deadline=$(( $(date +%s) + ${toString cfg.taskTimeout} ))
               status=timeout
@@ -99,7 +126,7 @@
                 fi
                 sleep 10
               done
-              systemctl stop microvm@${worker}.service
+              stop_vm
 
               if [ "$status" = done ]; then
                 out=${tasksDir}/done/$id
@@ -137,7 +164,7 @@
           "d ${tasksDir} 0755 root root -"
           # The cockpit user (wheel) drops tasks and reads results.
           "d ${tasksDir}/queue 0770 root wheel -"
-          "d ${tasksDir}/running 0755 root root -"
+          "d ${tasksDir}/running 0755 root root -" # per-worker subdirs, created by drainers
           "d ${tasksDir}/done 0755 root root -"
           "d ${tasksDir}/failed 0755 root root -"
         ];
