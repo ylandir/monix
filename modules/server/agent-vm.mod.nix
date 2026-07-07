@@ -7,8 +7,11 @@
 # allowlist proxy on the bridge IP is structurally the only way out.
 #
 # Ephemerality: the guest root is tmpfs (microvm.nix default) and the nix
-# store is the host's, read-only over virtiofs. Only the two volume images
-# (store overlay + /workspace scratch) persist across restarts.
+# store is the host's, read-only over virtiofs. The two volume images (store
+# overlay + /workspace scratch) are deleted on every VM start (ExecStartPre
+# below; the runner recreates them blank), so nothing an agent writes
+# survives a restart — a compromised or wedged worker is one
+# `systemctl restart microvm@<name>` from pristine.
 #
 # CREDENTIALS: agents authenticate with subscription logins (Claude Code
 # OAuth token, Codex auth.json) plus one fine-grained GitHub PAT per worker
@@ -21,13 +24,19 @@
 { self, ... }:
 {
   flake.nixosModules.agent-guests =
-    { config, lib, ... }:
+    {
+      config,
+      lib,
+      pkgs,
+      ...
+    }:
     let
       inherit (lib.attrsets) listToAttrs nameValuePair;
       inherit (lib.lists) concatMap singleton;
+      inherit (lib.meta) getExe';
       inherit (lib.modules) mkIf;
       inherit (lib.options) mkOption;
-      inherit (lib.strings) fixedWidthString optionalString;
+      inherit (lib.strings) concatMapStringsSep fixedWidthString optionalString;
       inherit (lib) types;
 
       cfg = config.agentFleet;
@@ -37,6 +46,20 @@
 
       credsDir = name: "/run/agents/creds/${name}";
       guestCredsMount = "/run/host-creds";
+
+      # Per-worker volume images, wiped on every VM start (see ExecStartPre).
+      volumes = [
+        {
+          image = "nix-overlay.img"; # writable nix-store overlay
+          mountPoint = "/nix/.rw-store";
+          size = 8192;
+        }
+        {
+          image = "workspace.img"; # the agent's scratch checkout/build dir
+          mountPoint = "/workspace";
+          size = 20480;
+        }
+      ];
 
       # One worker class per repo; `index` numbers workers within the fleet
       # and derives both the bridge address (10.100.0.10+index) and a
@@ -102,21 +125,8 @@
                 ];
 
                 # Writable overlay so `nix build` works inside the guest.
-                # Backed by a volume; contents are disposable by design (the
-                # guest's nix db forgets built paths on restart anyway).
                 writableStoreOverlay = "/nix/.rw-store";
-                volumes = [
-                  {
-                    image = "nix-overlay.img";
-                    mountPoint = "/nix/.rw-store";
-                    size = 8192;
-                  }
-                  {
-                    image = "workspace.img";
-                    mountPoint = "/workspace";
-                    size = 20480;
-                  }
-                ];
+                inherit volumes;
               };
 
               # NETWORKING — static address on the host-only bridge subnet,
@@ -285,7 +295,18 @@
           concatMap (w: [
             # microvm.nix has no slice option; standard unit override so every
             # worker counts against the fleet's 48G/agents.slice fence.
-            (nameValuePair "microvm@${w.name}" { serviceConfig.Slice = "agents.slice"; })
+            (nameValuePair "microvm@${w.name}" {
+              serviceConfig = {
+                Slice = "agents.slice";
+                # EPHEMERALITY — delete the volume images before every start;
+                # the runner's autoCreate recreates them blank (truncate +
+                # mkfs), so each boot is a clean slate.
+                ExecStartPre = singleton (
+                  "${getExe' pkgs.coreutils "rm"} -f "
+                  + concatMapStringsSep " " (v: "${config.microvm.stateDir}/${w.name}/${v.image}") volumes
+                );
+              };
+            })
 
             # Assemble this worker's credential directory (0700 root) from
             # the agenix-decrypted host secrets. virtiofsd runs as root, so

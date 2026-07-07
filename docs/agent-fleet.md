@@ -40,8 +40,11 @@ Containment is structural, not rule-based:
   filesystem, no new privileges, syscall/capability allowlist limited to the
   root→`squid` privilege drop).
 
-The guest root is tmpfs; only the two per-worker volume images (nix-store
-overlay + `/workspace` scratch) persist across restarts.
+The guest root is tmpfs, and the two per-worker volume images (nix-store
+overlay + `/workspace` scratch) are deleted by `ExecStartPre` on every VM
+start and recreated blank — nothing an agent writes survives a restart, so a
+compromised or wedged worker is one `systemctl restart microvm@<name>` from
+pristine.
 
 ## Credentials
 
