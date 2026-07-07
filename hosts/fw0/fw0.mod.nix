@@ -21,7 +21,7 @@ in
 {
   imports = singleton (
     lib.monix.nixosSystem "fw0" (
-      { lib, ... }:
+      { config, lib, ... }:
       let
         inherit (lib.attrsets) attrValues;
         inherit (lib.lists) singleton;
@@ -44,6 +44,29 @@ in
         # Agent-fleet microVM host. Brings up the host-only bridge +
         # egress proxy + microvm.nix runner (see microvm-host.mod.nix).
         agentFleet.enable = true;
+
+        # FLEET CREDENTIALS — subscription logins shared by all workers,
+        # as agenix secrets; create/refresh with `agenix -e
+        # hosts/fw0/<name>.age` from the repo root (the agenix CLI ships on
+        # cockpit hosts). No push credential yet: when the worker should
+        # push, create a fine-grained PAT scoped to exactly its repo
+        # (Contents read/write on that repo only; a forge ruleset protects
+        # main and allows agent/** pushes), encrypt it as
+        # hosts/fw0/agent-lfish-pat.age (currently a placeholder), declare
+        # it like the secrets below, and set the worker's `patFile`.
+        secrets.agent-claude-token.file = ./agent-claude-token.age;
+        secrets.agent-codex-auth.file = ./agent-codex-auth.age;
+
+        agentFleet.credentials = {
+          claudeTokenFile = config.secrets.agent-claude-token.path;
+          codexAuthFile = config.secrets.agent-codex-auth.path;
+        };
+
+        agentFleet.workers = singleton {
+          name = "lfish-0";
+          index = 1;
+          repo = "cdland/lfish";
+        };
 
         # BOOTSTRAP LOGIN — no password is committed here (this repo is
         # public, and `max` is the wheel/sudo account). On a fresh install,
@@ -154,17 +177,16 @@ in
         systemd.slices.inference.sliceConfig.MemoryMax = "96G";
         systemd.slices.services.sliceConfig.MemoryMax = "16G";
 
-        # SECRETS + AI STACK — DISABLED until real secrets exist.
+        # AI GATEWAY STACK — DISABLED until real secrets exist.
         #
         # agenix decrypts every declared `secrets.<name>` during system
-        # activation using the host key; the `.age` files here are still
+        # activation using the host key; the `.age` files below are still
         # AGENIX-PLACEHOLDER text (not real ciphertext), so declaring them
         # makes `nixos-rebuild switch` FAIL activation ("age: failed to read
-        # header"). So nothing below is declared while the values are fake —
-        # fw0 currently runs only as the cockpit + fleet host, which needs no
-        # secrets. Tailscale still runs (enabled by default) and stays joined
-        # via its persisted /var/lib/tailscale state; it just isn't re-auth'd
-        # from a key here.
+        # header"). So nothing below is declared while the values are fake.
+        # Tailscale still runs (enabled by default) and stays joined via its
+        # persisted /var/lib/tailscale state; it just isn't re-auth'd from a
+        # key here.
         #
         # TO RE-ENABLE (when you actually want the local LiteLLM/Open WebUI
         # AI gateway, or key-based tailscale re-auth): create the real

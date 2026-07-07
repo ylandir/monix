@@ -7,9 +7,11 @@ it, both gated on `agentFleet.enable`:
 
 - `modules/server/microvm-host.mod.nix` — the host side: microvm.nix runner,
   host-only bridge, squid egress proxy.
-- `modules/server/agent-vm.mod.nix` — the guest side: the `workers` roster
-  and the `mkAgentGuest` factory that turns each entry into a microVM plus
-  its `agents.slice` unit override.
+- `modules/server/agent-vm.mod.nix` — the guest side: the `agentFleet.workers`
+  roster option and the `mkAgentGuest` factory that turns each entry into a
+  microVM plus its `agents.slice` unit override and credential plumbing. The
+  roster (and the `agentFleet.credentials` paths) are set per host, in
+  `hosts/fw0/fw0.mod.nix`.
 
 ## Containment model
 
@@ -39,8 +41,38 @@ Containment is structural, not rule-based:
   root→`squid` privilege drop).
 
 The guest root is tmpfs; only the two per-worker volume images (nix-store
-overlay + `/workspace` scratch) persist across restarts. Guests hold no
-credentials: no API keys or tokens are injected.
+overlay + `/workspace` scratch) persist across restarts.
+
+## Credentials
+
+Agents authenticate with **subscription logins**, not API keys: one Claude
+Code OAuth token (`claude setup-token`) and one copy of Codex's `auth.json`
+(ChatGPT login) are shared fleet-wide, plus optionally (`patFile`) one
+**fine-grained GitHub PAT per worker class** scoped to exactly its repository
+(Contents read/write on that repo only; a forge ruleset protects `main` and
+permits `agent/**` pushes). The PAT's scope is the forge-side containment
+boundary — repo-specificity lives only in the roster entry and the injected
+secret, never in the modules. A worker without a PAT can run its agents and
+clone public repos but cannot push.
+
+These are agenix secrets under `hosts/fw0/`, decrypted by the host key at
+activation. cloud-hypervisor does not support `microvm.credentialFiles`
+(qemu-only), so injection works via a share: per worker, a host oneshot
+(`agent-creds-<name>`) assembles a root-owned `0700` directory
+`/run/agents/creds/<name>` containing exactly that worker's three files,
+which is exported to the guest as a **read-only virtiofs share** (virtiofsd
+runs as root; the `microvm` user can never read it). In the guest,
+`agent-credentials.service` installs them for the `agent` user:
+
+- `/run/agent-env` (`0400`) — exports `CLAUDE_CODE_OAUTH_TOKEN` (and
+  `GH_TOKEN`, when a PAT is configured); sourced by login shells. Non-login
+  invocations must `. /run/agent-env` themselves.
+- `~agent/.codex/auth.json` (`0400`) — Codex's login.
+- git pushes over HTTPS using gh as the credential helper (`GH_TOKEN` →
+  credentials at run time; no token on disk in gitconfig). `AGENT_REPO`
+  holds the worker's repo URL.
+
+Never place secrets in the nix store: guests read the entire host store.
 
 ## Networking layout
 
@@ -70,8 +102,9 @@ ssh agent@10.100.0.11               # from the host; admin keys are authorized
 systemctl stop microvm@lfish-0
 ```
 
-Adding a worker is one entry in the `workers` list in agent-vm.mod.nix; the
-VM definition and its slice override are both generated from it.
+Adding a worker is one `agentFleet.workers` entry in the host module plus its
+PAT secret; the VM definition, slice override, and credential directory are
+all generated from it.
 
 ## Verifying containment
 

@@ -9,41 +9,48 @@
 # Ephemerality: the guest root is tmpfs (microvm.nix default) and the nix
 # store is the host's, read-only over virtiofs. Only the two volume images
 # (store overlay + /workspace scratch) persist across restarts.
+#
+# CREDENTIALS: agents authenticate with subscription logins (Claude Code
+# OAuth token, Codex auth.json) plus one fine-grained GitHub PAT per worker
+# class, scoped to that class's single repo — the PAT's scope IS the
+# containment boundary on the forge side. cloud-hypervisor does not support
+# microvm.credentialFiles (qemu-only), so each worker gets a read-only
+# virtiofs share of a root-owned host directory holding exactly its own
+# credentials, assembled from the agenix-decrypted files by a host oneshot.
+# Never put secrets in the nix store — guests read the ENTIRE host store.
 { self, ... }:
 {
   flake.nixosModules.agent-guests =
     { config, lib, ... }:
     let
       inherit (lib.attrsets) listToAttrs nameValuePair;
-      inherit (lib.lists) singleton;
+      inherit (lib.lists) concatMap singleton;
       inherit (lib.modules) mkIf;
-      inherit (lib.strings) fixedWidthString;
+      inherit (lib.options) mkOption;
+      inherit (lib.strings) fixedWidthString optionalString;
+      inherit (lib) types;
 
       cfg = config.agentFleet;
 
       hostAddr = "10.100.0.1";
       proxyUrl = "http://${hostAddr}:3128";
 
-      # The fleet roster. Everything derived from a worker (the VM definition
-      # AND its slice fence) is generated from this one list, so a worker can
-      # never exist outside the agents.slice memory budget.
-      workers = [
-        {
-          name = "lfish-0";
-          index = 1;
-        }
-      ];
+      credsDir = name: "/run/agents/creds/${name}";
+      guestCredsMount = "/run/host-creds";
 
-      # One worker class per repo; `index` numbers workers within
-      # the fleet and derives both the bridge address (10.100.0.10+index) and
-      # a locally-administered MAC. The decimal index doubles as the MAC's
+      # One worker class per repo; `index` numbers workers within the fleet
+      # and derives both the bridge address (10.100.0.10+index) and a
+      # locally-administered MAC. The decimal index doubles as the MAC's
       # last octet — unique for index <= 99, which is plenty.
       mkAgentGuest =
         {
           name,
           index,
-          vcpu ? 8,
-          mem ? 8192, # MiB, static — no ballooning
+          repo,
+          patFile,
+          vcpu,
+          mem,
+          ...
         }:
         let
           addr = "10.100.0.${toString (10 + index)}";
@@ -67,14 +74,26 @@
                   inherit mac;
                 };
 
-                # The host's store, read-only. Note this exposes the ENTIRE
-                # host store to the guest — never put secrets in the store.
-                shares = singleton {
-                  proto = "virtiofs";
-                  tag = "ro-store";
-                  source = "/nix/store";
-                  mountPoint = "/nix/.ro-store";
-                };
+                shares = [
+                  # The host's store, read-only. Note this exposes the ENTIRE
+                  # host store to the guest — never put secrets in the store.
+                  {
+                    proto = "virtiofs";
+                    tag = "ro-store";
+                    source = "/nix/store";
+                    mountPoint = "/nix/.ro-store";
+                  }
+                  # This worker's credentials, assembled on the host by
+                  # agent-creds-<name>.service (below) and installed in-guest
+                  # by agent-credentials.service.
+                  {
+                    proto = "virtiofs";
+                    tag = "creds";
+                    source = credsDir name;
+                    mountPoint = guestCredsMount;
+                    readOnly = true;
+                  }
+                ];
 
                 # Writable overlay so `nix build` works inside the guest.
                 # Backed by a volume; contents are disposable by design (the
@@ -112,6 +131,8 @@
                 HTTP_PROXY = proxyUrl;
                 HTTPS_PROXY = proxyUrl;
                 NO_PROXY = "127.0.0.1,localhost";
+                # The one repo this worker class works on and pushes to.
+                AGENT_REPO = "https://github.com/${repo}.git";
               };
 
               environment.systemPackages = [
@@ -133,6 +154,45 @@
               ];
               # Substituters stay at the default cache.nixos.org — the only
               # cache on the egress allowlist (.nixos.org).
+
+              # CREDENTIAL INSTALL — copies the host share into place for the
+              # agent user: an env file with the Claude OAuth token and the
+              # repo PAT (sourced by login shells; non-login invocations must
+              # `. /run/agent-env` themselves), and Codex's auth.json.
+              systemd.services.agent-credentials = {
+                description = "Install worker credentials from the host share";
+                wantedBy = [ "multi-user.target" ];
+                before = [ "multi-user.target" ];
+                unitConfig.RequiresMountsFor = [ guestCredsMount ];
+                serviceConfig = {
+                  Type = "oneshot";
+                  RemainAfterExit = true;
+                };
+                script = ''
+                  umask 077
+                  {
+                    printf 'export CLAUDE_CODE_OAUTH_TOKEN=%q\n' "$(cat ${guestCredsMount}/claude-token)"
+                    ${optionalString (patFile != null) ''
+                      printf 'export GH_TOKEN=%q\n' "$(cat ${guestCredsMount}/repo-pat)"
+                    ''}
+                  } > /run/agent-env
+                  chown agent:users /run/agent-env
+                  install -d -m 0700 -o agent -g users /home/agent/.codex
+                  install -m 0400 -o agent -g users ${guestCredsMount}/codex-auth.json /home/agent/.codex/auth.json
+                '';
+              };
+              environment.extraInit = ''[ -r /run/agent-env ] && . /run/agent-env'';
+
+              # git pushes over HTTPS with the PAT; gh turns $GH_TOKEN into
+              # git credentials, so no token is ever written into gitconfig.
+              programs.git = {
+                enable = true;
+                config = {
+                  credential."https://github.com".helper = "!gh auth git-credential";
+                  user.name = name;
+                  user.email = "${name}@agents.invalid";
+                };
+              };
 
               # The sole account. No wheel, no sudo; it owns /workspace and
               # nothing else. Keyed to the admin keys: the human cockpit
@@ -161,13 +221,86 @@
         };
     in
     {
-      config = mkIf cfg.enable {
-        microvm.vms = listToAttrs (map (w: nameValuePair w.name (mkAgentGuest w)) workers);
+      # The fleet roster. Everything derived from a worker (the VM definition,
+      # its credentials, AND its slice fence) is generated from this one list,
+      # so a worker can never exist outside the agents.slice memory budget or
+      # with credentials broader than its own class's.
+      options.agentFleet = {
+        workers = mkOption {
+          description = "agent-fleet worker roster; repo-specificity lives only here and in the injected PAT";
+          default = [ ];
+          type = types.listOf (
+            types.submodule {
+              options = {
+                name = mkOption { type = types.str; };
+                index = mkOption { type = types.ints.between 1 99; };
+                repo = mkOption {
+                  type = types.str;
+                  example = "cdland/lfish";
+                  description = "GitHub owner/repo this worker class is bound to";
+                };
+                patFile = mkOption {
+                  type = types.nullOr types.str;
+                  default = null;
+                  description = "host path of the fine-grained PAT scoped to exactly this repo; null = no push credential (worker can still run agents and clone public repos)";
+                };
+                vcpu = mkOption {
+                  type = types.int;
+                  default = 8;
+                };
+                mem = mkOption {
+                  type = types.int;
+                  default = 8192; # MiB, static — no ballooning
+                };
+              };
+            }
+          );
+        };
 
-        # microvm.nix has no slice option; standard unit override so every
-        # worker counts against the fleet's 48G/agents.slice fence.
+        # Subscription credentials shared by every worker (one Claude Max +
+        # one ChatGPT login for the whole fleet).
+        credentials = {
+          claudeTokenFile = mkOption {
+            type = types.str;
+            description = "host path of the Claude Code OAuth token (from `claude setup-token`)";
+          };
+          codexAuthFile = mkOption {
+            type = types.str;
+            description = "host path of a copy of Codex's auth.json (from a ChatGPT login)";
+          };
+        };
+      };
+
+      config = mkIf cfg.enable {
+        microvm.vms = listToAttrs (map (w: nameValuePair w.name (mkAgentGuest w)) cfg.workers);
+
         systemd.services = listToAttrs (
-          map (w: nameValuePair "microvm@${w.name}" { serviceConfig.Slice = "agents.slice"; }) workers
+          concatMap (w: [
+            # microvm.nix has no slice option; standard unit override so every
+            # worker counts against the fleet's 48G/agents.slice fence.
+            (nameValuePair "microvm@${w.name}" { serviceConfig.Slice = "agents.slice"; })
+
+            # Assemble this worker's credential directory (0700 root) from
+            # the agenix-decrypted host secrets. virtiofsd runs as root, so
+            # the guest can be served files the microvm user cannot read.
+            (nameValuePair "agent-creds-${w.name}" {
+              description = "Assemble credentials for agent worker ${w.name}";
+              requiredBy = [ "microvm-virtiofsd@${w.name}.service" ];
+              before = [ "microvm-virtiofsd@${w.name}.service" ];
+              serviceConfig = {
+                Type = "oneshot";
+                RemainAfterExit = true;
+              };
+              script = ''
+                install -d -m 0700 ${credsDir w.name}
+                install -m 0400 ${cfg.credentials.claudeTokenFile} ${credsDir w.name}/claude-token
+                install -m 0400 ${cfg.credentials.codexAuthFile} ${credsDir w.name}/codex-auth.json
+                ${optionalString (w.patFile != null) ''
+                  install -m 0400 ${w.patFile} ${credsDir w.name}/repo-pat
+                ''}
+              '';
+            })
+          ]) cfg.workers
         );
       };
     };

@@ -17,6 +17,9 @@ let
 in
 {
   "hosts/fw0/tailscale.age".publicKeys = [ fw0 ] ++ admin;
+  "hosts/fw0/agent-claude-token.age".publicKeys = [ fw0 ] ++ admin;
+  "hosts/fw0/agent-codex-auth.age".publicKeys = [ fw0 ] ++ admin;
+  "hosts/fw0/agent-lfish-pat.age".publicKeys = [ fw0 ] ++ admin;
   "hosts/fw0/litellm.env.age".publicKeys = [ fw0 ] ++ admin;
   "hosts/fw0/open-webui.env.age".publicKeys = [ fw0 ] ++ admin;
 }

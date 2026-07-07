@@ -8,10 +8,17 @@
 # The agent tooling itself (claude-code, codex, CLAUDE.md) comes from the
 # existing home aspects in packages.mod.nix / claude.mod.nix, which gate on
 # `isDesktop || cockpit.enable`.
+{ inputs, ... }:
 {
   flake.nixosModules.cockpit =
-    { config, lib, ... }:
+    {
+      config,
+      lib,
+      pkgs,
+      ...
+    }:
     let
+      inherit (lib.lists) singleton;
       inherit (lib.modules) mkIf;
       inherit (lib.options) mkEnableOption;
     in
@@ -23,6 +30,11 @@
         # system-wide (packages-shell-utils), this adds the /etc config.
         programs.tmux.enable = true;
         programs.tmux.historyLimit = 50000;
+
+        # The cockpit is where secrets get created/rotated (`agenix -e ...`
+        # from the repo root) — fleet credentials in particular originate
+        # here (`claude setup-token`, Codex's auth.json).
+        environment.systemPackages = singleton inputs.agenix.packages.${pkgs.system}.default;
       };
     };
 }

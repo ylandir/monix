@@ -1,0 +1,1 @@
+AGENIX-PLACEHOLDER: NOT ENCRYPTED, NOT A REAL SECRET. Recreate with `agenix -e hosts/fw0/agent-claude-token.age` (real keys in keys.nix) before any deploy.
