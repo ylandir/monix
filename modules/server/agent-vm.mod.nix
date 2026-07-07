@@ -266,11 +266,10 @@
                   ConditionPathExists = "${guestTaskMount}/prompt.md";
                   RequiresMountsFor = [ guestTaskMount ];
                 };
-                path = [
-                  pkgs.claude-code
-                  pkgs.coreutils
-                  pkgs.gawk
-                ];
+                # The full system path, not a minimal tool list: the agent's
+                # shell inherits this unit's PATH, and it needs everything
+                # installed in the guest (git, gh, ask-cockpit, compilers...).
+                path = [ "/run/current-system/sw" ];
                 serviceConfig = {
                   Type = "oneshot";
                   User = "agent";
