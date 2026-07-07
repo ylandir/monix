@@ -15,7 +15,6 @@
   };
 
   admin = [
-    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAID88DMnwS1GgquQmaSs8ez/x+0EhI8H45INknbZC8V8P clyd@clyd.org"
     "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIF7/0+EtR35ZsgmHq0IXNY5gQ1SlTUGSRz+P38qGfn0F dylan@dylandavid.com"
   ];
 }
