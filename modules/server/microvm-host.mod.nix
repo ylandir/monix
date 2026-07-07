@@ -33,17 +33,16 @@
       hostAddr = "10.100.0.1";
 
       # The egress allowlist — the ONLY destinations a guest can reach. Keep it
-      # minimal; every entry is a potential exfiltration channel. A leading dot
-      # matches subdomains. Widen only by reviewed commit.
+      # minimal; every entry is a potential exfiltration channel. Widen only by
+      # reviewed commit. A leading-dot dstdomain matches the domain AND all
+      # subdomains, so the dotted forms below already cover api.anthropic.com,
+      # codeload/objects.github*.com, cache/channels.nixos.org, etc. — don't
+      # also list the specific hosts (squid rejects the redundancy).
       allowedDomains = [
-        "api.anthropic.com" # Claude API
-        ".anthropic.com" # Claude Code auth/telemetry endpoints
-        "github.com" # git over https
-        ".github.com"
-        "codeload.github.com" # tarball/clone fetches
+        ".anthropic.com" # Claude API + Claude Code auth/telemetry
+        ".github.com" # git over https, codeload
         ".githubusercontent.com" # raw/objects
-        "cache.nixos.org" # nix binary cache
-        ".nixos.org" # channels.nixos.org, releases
+        ".nixos.org" # nix binary cache, channels, releases
       ];
     in
     {
@@ -112,6 +111,7 @@
           enable = true;
           configText = ''
             http_port ${hostAddr}:3128
+            pid_filename /run/squid.pid
 
             acl allowed_domains dstdomain ${concatStringsSep " " allowedDomains}
             acl SSL_ports port 443
@@ -131,7 +131,6 @@
             access_log stdio:/var/log/squid/access.log
             cache_log stdio:/var/log/squid/cache.log
             coredump_dir /var/cache/squid
-            dns_v4_first on
           '';
         };
         systemd.services.squid.serviceConfig.Slice = "agents.slice";
