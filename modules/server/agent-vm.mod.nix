@@ -257,19 +257,16 @@
               # are wiped on start, so boot state is always pristine and this
               # unit's ConditionPathExists decides whether this is a task run
               # or an idle/debugging boot.
-              # Triggered by the path unit below, NOT WantedBy=multi-user:
-              # a wanted oneshot joins the boot transaction, and the VM's
-              # readiness notification (Type=notify via vsock) waits for boot
-              # to settle — a long task would hold the host-side
-              # `systemctl start microvm@<name>` until its 150s timeout.
-              systemd.paths.agent-task = {
-                description = "Watch for a staged task";
-                wantedBy = [ "multi-user.target" ];
-                pathConfig.PathExists = "${guestTaskMount}/prompt.md";
-              };
-
+              # Type=exec, NOT oneshot: the guest's pid1 reports readiness to
+              # the VMM (the VM unit is Type=notify via vsock) only once the
+              # boot transaction settles, and a oneshot's start job lasts for
+              # the whole task — a long task would hold the host-side
+              # `systemctl start microvm@<name>` until its 150s timeout. An
+              # exec start job completes at fork, so boot settles in seconds
+              # while the task runs on.
               systemd.services.agent-task = {
                 description = "Run the dispatched task";
+                wantedBy = [ "multi-user.target" ];
                 requires = [ "agent-credentials.service" ];
                 after = [ "agent-credentials.service" ];
                 unitConfig = {
@@ -281,7 +278,7 @@
                 # installed in the guest (git, gh, ask-cockpit, compilers...).
                 path = [ "/run/current-system/sw" ];
                 serviceConfig = {
-                  Type = "oneshot";
+                  Type = "exec";
                   User = "agent";
                   Group = "users";
                   WorkingDirectory = "/workspace";
