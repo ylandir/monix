@@ -1,7 +1,7 @@
 { inputs, ... }:
 {
   flake.commonModules.nix =
-    { pkgs, ... }:
+    { config, pkgs, ... }:
     {
       nix.settings = {
         experimental-features = [
@@ -9,9 +9,13 @@
           "nix-command"
         ];
 
+        # Trusted Nix users are passwordless root-equivalent via the daemon, so
+        # this is deliberately NOT the whole @wheel group — just root and this
+        # host's primary user. Admin still works via sudo (root is always
+        # trusted); only the blanket group grant is dropped.
         trusted-users = [
           "root"
-          "@wheel"
+          config.primaryUser
         ];
 
         substituters = [
