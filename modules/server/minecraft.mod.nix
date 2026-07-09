@@ -49,7 +49,14 @@
       # yet (its latest, 0.3.0, tops out at 26.1.2), and pinning ahead of the
       # mods would mean shipping a server the mandated mods can't load. Pin the
       # exact package (fabric-26_1_2), never a floating alias.
-      serverPackage = pkgs.fabricServers.fabric-26_1_2;
+      # jre override: Minecraft 26.x class files are Java 25 (class version
+      # 69), but nix-minecraft's package wraps this server with a Java 21
+      # runtime — the JVM dies at launch with UnsupportedClassVersionError
+      # (found live on fw0; invisible in the journal because tmux swallows
+      # the crash). Pin the runtime the game actually needs.
+      serverPackage = pkgs.fabricServers.fabric-26_1_2.override {
+        jre_headless = pkgs.jdk25_headless;
+      };
 
       dataDir = config.services.minecraft-servers.dataDir; # /srv/minecraft
       worldDir = "${dataDir}/main"; # per-server subdir == the server name below
