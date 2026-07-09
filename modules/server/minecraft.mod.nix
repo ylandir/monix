@@ -235,7 +235,17 @@
           # Syscall allowlist: the standard service set, nothing exotic. The JVM
           # JIT needs W+X pages, so MemoryDenyWriteExecute is deliberately NOT
           # set — it would stop the server from starting.
+          #
+          # EPERM instead of the default kill-on-violation: Spark's native
+          # async-profiler probes perf_event_open (outside @system-service);
+          # under the default action seccomp KILLS the JVM mid-startup —
+          # found live on fw0, where the kill landed during first-boot world
+          # creation and left a half-written world that broke every restart
+          # ("Overworld settings missing"). With EPERM the probe fails
+          # gracefully and Spark falls back to its Java sampler; the filter
+          # blocks exactly what it blocked before.
           SystemCallFilter = [ "@system-service" ];
+          SystemCallErrorNumber = "EPERM";
 
           # --- The anti-pivot egress fence (the key control) ---
           # systemd checks IPAddressAllow BEFORE IPAddressDeny; anything matched
