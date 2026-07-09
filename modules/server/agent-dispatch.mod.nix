@@ -32,9 +32,7 @@
     let
       inherit (lib.attrsets) listToAttrs nameValuePair;
       inherit (lib.modules) mkIf;
-      inherit (lib.options) mkOption;
-      inherit (lib.strings) concatMapStringsSep;
-      inherit (lib) types;
+      inherit (lib.options) mkOption;      inherit (lib) types;
 
       cfg = config.agentFleet;
       op = cfg.operatorUser;
@@ -48,14 +46,25 @@
         in
         {
           description = "Drain the agent task queue on worker ${worker}";
+          # Resident daemon: started at boot, loops forever draining the queue
+          # (poll-waits when the queue is empty — see the bottom of the loop),
+          # restarted on failure. Replaces the old agent-dispatcher.path +
+          # oneshot starter, which wedged under burst submissions (systemd's
+          # start-rate-limit failed the .path watcher and it stopped dispatching)
+          # and could also miss a DirectoryNotEmpty re-trigger mid-task.
+          # startLimitIntervalSec=0 so a crash loop can never make systemd give
+          # up on the dispatcher — it must always keep trying to come back.
+          wantedBy = [ "multi-user.target" ];
+          startLimitIntervalSec = 0;
           path = [
             pkgs.coreutils
             pkgs.gawk
             pkgs.systemd
           ];
           serviceConfig = {
-            Type = "oneshot";
             Slice = "agents.slice";
+            Restart = "always";
+            RestartSec = 2;
           };
           script = ''
             queue=${tasksDir}/queue
@@ -115,7 +124,11 @@
               # planted symlink can't masquerade as "queue empty" and strand
               # the real tasks behind it.
               if [ ! -e "$1" ] && [ ! -L "$1" ]; then
-                break
+                # Queue empty: as a resident daemon, wait and re-scan rather than
+                # exit. Short poll — a ~2s dispatch delay is invisible next to
+                # the guest's boot time.
+                sleep 2
+                continue
               fi
               # File results under the submitted id verbatim (the fleet tool
               # already guarantees a unique id, so `fleet watch/fetch <id>`
@@ -276,25 +289,7 @@
           "f ${tasksDir}/log 0664 root ${op} -"
         ];
 
-        systemd.paths.agent-dispatcher = {
-          description = "Watch the agent task queue";
-          wantedBy = [ "multi-user.target" ];
-          pathConfig.DirectoryNotEmpty = "${tasksDir}/queue";
-        };
-
-
         systemd.services = {
-          # The path-triggered starter: kick every worker's drainer (no-op
-          # for drainers already running) and exit, so the path unit can
-          # re-trigger for later arrivals.
-          agent-dispatcher = {
-            description = "Start a queue drainer per agent worker";
-            path = [ pkgs.systemd ];
-            serviceConfig.Type = "oneshot";
-            script = "systemctl start --no-block ${
-              concatMapStringsSep " " (w: "agent-dispatch-${w.name}.service") cfg.workers
-            }";
-          };
           # GUIDANCE — answers workers' ask-cockpit questions with a stronger
           # model, using the cockpit user's own claude login (which is why it
           # runs as primaryUser, whose uid 1000 also matches the guest agent
