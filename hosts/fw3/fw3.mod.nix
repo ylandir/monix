@@ -124,6 +124,12 @@ in
         # DESKTOP EXTRAS
         programs.steam.enable = true;
 
+        # Minecraft client, for the fw0 tailnet server (see
+        # modules/server/minecraft.mod.nix). Prism over the stock launcher:
+        # trivial to pin a client instance to the server's exact Minecraft
+        # version, which the server tracks behind latest (mod availability).
+        environment.systemPackages = singleton pkgs.prismlauncher;
+
         # USER: login shell is NixOS's default (bash) — a plain POSIX $SHELL
         # for tools that shell out (nvim, lf, tmux). The interactive shell is
         # nushell, launched by ghostty (see ghostty.mod.nix).
