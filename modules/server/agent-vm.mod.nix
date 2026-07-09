@@ -344,6 +344,7 @@
                   }
                   agent="$(fm agent)"
                   model="$(fm model)"
+                  effort="$(fm effort)" # optional — only for models with a thinking level
                   awk '
                     NR==1 && $0=="---" { h=1; next }
                     h && $0=="---" { h=0; next }
@@ -370,6 +371,7 @@
                     case "$agent" in
                       claude)
                         claude -p "$(cat /tmp/prompt-body.md)" --model "$model" \
+                          ''${effort:+--effort "$effort"} \
                           --dangerously-skip-permissions \
                           --append-system-prompt "$hint" \
                           > ${guestTaskMount}/report.md \
@@ -383,6 +385,7 @@
                           --dangerously-bypass-approvals-and-sandbox \
                           --skip-git-repo-check \
                           --model "$model" \
+                          ''${effort:+-c model_reasoning_effort="$effort"} \
                           --output-last-message ${guestTaskMount}/report.md \
                           "$hint
 

@@ -201,7 +201,8 @@
               # so the logged agent/model can't drift from what's dispatched.
               agent="$(san "$(fm agent "$work/prompt.md")")"
               model="$(san "$(fm model "$work/prompt.md")")"
-              log "DISPATCH $id agent=$agent''${model:+ model=$model}"
+              guidance="$(san "$(fm guidance "$work/prompt.md")")"
+              log "DISPATCH $id agent=$agent''${model:+ model=$model}''${guidance:+ guidance=$guidance}"
 
               # Heartbeat wait: finish on exit-code; otherwise kill only if the
               # task STALLS (no agent.log growth for stallTimeout) or exceeds the
@@ -262,7 +263,9 @@
                     case "$seen_q" in
                       *" $qn "*) : ;;
                       *)
-                        log "ESCALATE $id question $qn -> ${cfg.guidanceModel}"
+                        esc_adv="''${guidance:-${cfg.guidanceModel}}"
+                        case "$esc_adv" in "" | none | NONE) esc_adv=none ;; esac
+                        log "ESCALATE $id question $qn -> $esc_adv"
                         seen_q="$seen_q$qn "
                         ;;
                     esac
@@ -322,8 +325,15 @@
 
       options.agentFleet.guidanceModel = mkOption {
         type = types.str;
-        default = "opus";
-        description = "model that answers workers' ask-cockpit questions";
+        default = ""; # empty => no fleet-wide default advisor
+        description = ''
+          Optional fleet-wide default advisor model for ask-cockpit escalations.
+          Empty (the default) means there is no default: tasks name their own
+          advisor via front-matter `guidance:`, and a task with `guidance: none`
+          or no `guidance:` line gets no advisor (escalations are answered
+          immediately with "use your own judgment"). A per-task `guidance:`
+          always overrides this.
+        '';
       };
 
       config = mkIf (cfg.enable && cfg.workers != [ ]) {
@@ -364,6 +374,7 @@
             path = [
               pkgs.claude-code
               pkgs.coreutils
+              pkgs.gawk
             ];
             serviceConfig = {
               Type = "oneshot";
@@ -372,6 +383,14 @@
               Slice = "agents.slice";
             };
             script = ''
+              fm() {
+                awk -v key="$1" '
+                  NR==1 && $0=="---" { h=1; next }
+                  h && $0=="---" { exit }
+                  h && $0 ~ "^"key":" { sub("^"key":[ \t]*",""); print; exit }
+                ' "$2" 2>/dev/null
+              }
+              san() { printf '%s' "$1" | tr -cd 'A-Za-z0-9._-' | cut -c1-40; }
               for q in /var/lib/agents/work/*/task/question-*.md; do
                 if [ ! -e "$q" ]; then
                   continue
@@ -382,6 +401,26 @@
                 answer="$dir/answer-$n.md"
                 echo "answering $q"
 
+                # Advisor is chosen per-task by the cockpit (front-matter `guidance:`),
+                # read from THIS task's prompt. `none`/absent => no advisor: fall
+                # through to the optional fleet-wide default, and if that's empty too,
+                # answer immediately so the agent doesn't wait out the ask-cockpit
+                # timeout.
+                g="$(san "$(fm guidance "$dir/prompt.md")")"
+                case "$g" in
+                  none | NONE) gmodel="" ;;             # explicit none: no advisor
+                  "") gmodel="${cfg.guidanceModel}" ;;  # absent: fleet-wide default (may be empty)
+                  *) gmodel="$g" ;;
+                esac
+                case "$gmodel" in
+                  "" | none | NONE)
+                    printf '%s\n' "No advisor is configured for this task — proceed on your own best judgment." > "$answer.tmp"
+                    mv "$answer.tmp" "$answer"
+                    rm -f "$q"
+                    continue
+                    ;;
+                esac
+
                 guidance="$(
                   timeout 300 claude -p \
                     "You supervise a fleet of sandboxed coding/research agents. One of them is working on the task below and has asked you a question. Give concise, decisive guidance it can act on immediately.
@@ -391,7 +430,7 @@
 
               == THE AGENT'S QUESTION ==
               $(cat "$q")" \
-                    --model ${cfg.guidanceModel} \
+                    --model "$gmodel" \
                     --disallowedTools Bash Edit Write Read Grep Glob Task WebFetch WebSearch NotebookEdit
                 )" || guidance="(the supervising model could not be reached; proceed on your best judgment)"
 
