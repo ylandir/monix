@@ -213,7 +213,11 @@
           ProtectSystem = "strict";
           ReadWritePaths = [ worldDir ];
           NoNewPrivileges = true;
-          ProcSubset = "pid";
+          # NO ProcSubset=pid: it hides /proc/mounts (and cpuinfo/meminfo),
+          # which Java's NIO needs for file-store lookups — Minecraft's
+          # world/datapack loading dies with "Mount point not found" →
+          # "Overworld settings missing" (found live on fw0). Upstream's
+          # ProtectProc=invisible still hides other processes' entries.
           RemoveIPC = true;
           # The upstream module already sets UMask=0007; override to the tighter
           # 0077 (no group access) with mkForce to win the merge.
