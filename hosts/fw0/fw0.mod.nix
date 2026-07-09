@@ -58,19 +58,18 @@ in
           codexAuthFile = config.secrets.agent-codex-auth.path;
         };
 
-        # Generic workers: no repo binding (set `repo`, and a push
-        # credential via `patFile`, on a worker that should work a
-        # specific repository).
-        agentFleet.workers = [
-          {
-            name = "worker-0";
-            index = 1;
-          }
-          {
-            name = "worker-1";
-            index = 2;
-          }
-        ];
+        # Generic workers: no repo binding (set `repo`, and a push credential
+        # via `patFile`, on a worker that should work a specific repository).
+        # Warm pool: every worker boots idle and waits for a task (see
+        # agent-vm.mod.nix), so keep MORE than typical demand — an incoming task
+        # grabs one that's already up instead of waiting on a ~50s boot. Idle
+        # guests are cheap (cloud-hypervisor demand-pages RAM; an idle guest
+        # holds only a few hundred MB), and the fleet's real usage is capped
+        # fleet-wide by the agents.slice budget. Pool size is just this number.
+        agentFleet.workers = builtins.genList (i: {
+          name = "worker-${toString i}";
+          index = i + 1;
+        }) 12;
 
         # BOOTSTRAP LOGIN — no password is committed here (this repo is
         # public, and `max` is the wheel/sudo account). On a fresh install,
