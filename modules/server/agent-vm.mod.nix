@@ -321,12 +321,30 @@
                   . /run/agent-env
                   prompt=${guestTaskMount}/prompt.md
 
-                  # Warm pool: boot idle and wait for the host to deliver a task
-                  # into the share, then run exactly ONE task. The host destroys
-                  # this VM after reading exit-code, so a second prompt is never
-                  # seen in the same boot. (Backward-compatible: a prompt already
-                  # present at boot makes this pass immediately.)
-                  while [ ! -f "$prompt" ]; do sleep 1; done
+                  # Warm pool: boot idle and wait for the host to deliver a task.
+                  # DIAGNOSTIC (temporary): prove this watcher is alive and log what
+                  # the guest's OWN view of the task dir sees while waiting. Written
+                  # to the share; guest->host writes ARE visible to the host, so we
+                  # can read diag.log on the host side. The periodic `ls` also tests
+                  # whether a readdir reveals the host-delivered prompt when a plain
+                  # stat (`[ -f ]`) does not. Remove once delivery is settled.
+                  {
+                    echo "agent-task started: $(date)"
+                    echo "initial ls of ${guestTaskMount}:"
+                    ls -la ${guestTaskMount}
+                  } > ${guestTaskMount}/diag.log 2>&1
+                  i=0
+                  while [ ! -f "$prompt" ]; do
+                    i=$((i + 1))
+                    if [ $((i % 5)) -eq 0 ]; then
+                      {
+                        echo "--- poll $i ($(date)): guest ls of ${guestTaskMount}:"
+                        ls -la ${guestTaskMount}
+                      } >> ${guestTaskMount}/diag.log 2>&1
+                    fi
+                    sleep 1
+                  done
+                  echo "SAW PROMPT at poll $i: $(date)" >> ${guestTaskMount}/diag.log 2>&1
 
                   fm() {
                     awk -v key="$1" '
