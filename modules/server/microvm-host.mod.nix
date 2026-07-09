@@ -98,6 +98,10 @@
           matchConfig.Name = "vm-*";
           networkConfig.Bridge = bridge;
           linkConfig.RequiredForOnline = "no";
+          # Isolated ports cannot forward to other isolated ports at L2, but
+          # can still deliver to the bridge master (the host). This drops
+          # guest↔guest traffic while leaving guest→host:3128 (squid) intact.
+          bridgeConfig.Isolated = true;
         };
 
         # EGRESS FIREWALL — from the bridge, guests may reach ONLY squid.
