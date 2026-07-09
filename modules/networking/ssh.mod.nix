@@ -17,12 +17,13 @@
         settings = {
           PasswordAuthentication = mkDefault false;
           KbdInteractiveAuthentication = mkDefault false;
-          PermitRootLogin = mkDefault "prohibit-password";
+          PermitRootLogin = mkDefault "no";
         };
       };
 
       # Root deliberately has NO authorized keys: admin access is the primary
-      # user + sudo; root logins are console-only (PermitRootLogin above
-      # still allows key auth, but no keys are ever authorized).
+      # user + sudo; root logins are console-only. PermitRootLogin = "no"
+      # forbids root SSH outright, so even a stray authorized key could not
+      # enable it — belt and suspenders over the no-keys convention.
     };
 }
