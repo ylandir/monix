@@ -220,7 +220,16 @@
           # online-mode) fall through as allowed. Result: reachable to tailnet
           # players and Mojang, but unable to touch localhost, the home LAN, or
           # the fleet bridge.
-          IPAddressAllow = [ "100.64.0.0/10" ]; # tailnet (CGNAT range)
+          IPAddressAllow = [
+            "100.64.0.0/10" # tailnet (CGNAT range)
+            # systemd-resolved's stub resolver. The JVM resolves Mojang's
+            # session servers through /etc/resolv.conf → 127.0.0.53, which the
+            # loopback deny below would otherwise block — silently breaking
+            # online-mode auth. A /32 pinhole to the stub (nothing else binds
+            # this address) keeps DNS working while the rest of loopback, and
+            # every service on 127.0.0.1, stays unreachable.
+            "127.0.0.53/32"
+          ];
           IPAddressDeny = [
             "127.0.0.0/8" # loopback / other localhost services
             "::1"
