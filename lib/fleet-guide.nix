@@ -101,11 +101,12 @@
         ---
         agent: claude | codex | opencode # required
         model: <model-id>     # required; e.g. gpt-5.5 for codex. For opencode this is a
-                              # provider/model slug — in this fleet always
-                              # openrouter/<vendor>/<model>, e.g.
-                              # openrouter/moonshotai/kimi-k2,
-                              # openrouter/google/gemini-2.5-pro — which is how ANY model on
-                              # the OpenRouter catalog is dispatched.
+                              # provider/model slug, one of:
+                              #   openrouter/<vendor>/<model> — ANY model on the OpenRouter
+                              #     catalog (e.g. openrouter/moonshotai/kimi-k2), metered;
+                              #   local/<name> — the ship's own llama-swap catalog on the
+                              #     host GPU, free tokens; names come from inference.models
+                              #     in the monix config (none declared = nothing to dispatch).
         guidance: <model-id>  # optional; the advisor an escalating drone reaches via
                               # ask-cockpit (pick per task — best advisor shifts over time
                               # and by domain; e.g. opus, fable, gpt-5.5). `none` or omitted
@@ -120,8 +121,11 @@
     Use `codex` + `gpt-5.5` for independent reviews / second opinions (bills the ChatGPT pool,
     not the Claude pool). Use `opencode` + an openrouter/ slug for anything outside the two
     subscription vendors — NB unlike those pools it bills OpenRouter credit per token, so
-    match model price to task weight. Drones can't see this host's working tree — target a
-    pushed branch/public repo or embed the diff in the prompt.
+    match model price to task weight. Use `opencode` + a local/ id for bulk low-stakes work:
+    it runs on the ship's own GPU and costs nothing but electricity — but local models are
+    WEAKER and more prompt-injectable than the frontier pools, so keep them off tasks that
+    chew untrusted input or need real judgment. Drones can't see this host's working tree —
+    target a pushed branch/public repo or embed the diff in the prompt.
 
     ## Handling results
 

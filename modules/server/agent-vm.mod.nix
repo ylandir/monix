@@ -32,8 +32,8 @@
       ...
     }:
     let
-      inherit (lib.attrsets) listToAttrs nameValuePair optionalAttrs;
-      inherit (lib.lists) concatMap singleton;
+      inherit (lib.attrsets) listToAttrs mapAttrsToList nameValuePair optionalAttrs;
+      inherit (lib.lists) concatLists concatMap singleton;
       inherit (lib.meta) getExe';
       inherit (lib.modules) mkForce mkIf;
       inherit (lib.options) mkOption;
@@ -47,6 +47,40 @@
 
       hostAddr = "10.100.0.1";
       proxyUrl = "http://${hostAddr}:3128";
+      # Direct (non-proxied) guest destinations: local inference bypasses
+      # squid — it's plain HTTP to a bridge IP, which the CONNECT allowlist
+      # could never express; the br-agents pinhole is its firewall instead.
+      noProxy = "127.0.0.1,localhost,${hostAddr}";
+
+      # Guest opencode configuration. When the host serves local inference
+      # (inference.mod.nix), expose it to opencode as a `local` provider —
+      # the model catalog (and its aliases) is generated from the SAME
+      # inference.models the host serves, so guest model ids can never
+      # drift from what llama-swap actually offers. Dispatch as
+      # `agent: opencode` + `model: local/<name>`. The ai-sdk loader wants
+      # a non-empty apiKey; llama-swap ignores it.
+      opencodeConfig = pkgs.writeText "opencode.json" (
+        builtins.toJSON (
+          {
+            "$schema" = "https://opencode.ai/config.json";
+          }
+          // optionalAttrs config.inference.enable {
+            provider.local = {
+              npm = "@ai-sdk/openai-compatible";
+              name = "ship-local inference (llama-swap)";
+              options = {
+                baseURL = "http://${hostAddr}:${toString config.inference.port}/v1";
+                apiKey = "local";
+              };
+              models = listToAttrs (
+                concatLists (
+                  mapAttrsToList (n: m: map (id: nameValuePair id { }) ([ n ] ++ m.aliases)) config.inference.models
+                )
+              );
+            };
+          }
+        )
+      );
 
       credsDir = name: "/run/agents/creds/${name}";
       guestCredsMount = "/run/host-creds";
@@ -204,10 +238,14 @@
               # covers the lowercase env vars plus nix-daemon; Claude Code and
               # Codex (Node) want the uppercase forms, set explicitly.
               networking.proxy.default = proxyUrl;
+              networking.proxy.noProxy = noProxy;
               environment.variables = {
                 HTTP_PROXY = proxyUrl;
                 HTTPS_PROXY = proxyUrl;
-                NO_PROXY = "127.0.0.1,localhost";
+                NO_PROXY = noProxy;
+                # opencode reads its provider catalog (incl. the host's local
+                # inference endpoint) from this read-only store path.
+                OPENCODE_CONFIG = "${opencodeConfig}";
               }
               # The one repo this worker class works on, when it is bound to
               # one at all.
@@ -311,7 +349,8 @@
                   Environment = [
                     "HTTP_PROXY=${proxyUrl}"
                     "HTTPS_PROXY=${proxyUrl}"
-                    "NO_PROXY=127.0.0.1,localhost"
+                    "NO_PROXY=${noProxy}"
+                    "OPENCODE_CONFIG=${opencodeConfig}"
                     "BASH_DEFAULT_TIMEOUT_MS=1200000"
                     "BASH_MAX_TIMEOUT_MS=1800000"
                   ];
@@ -408,9 +447,11 @@
                         # (same as codex). --auto approves every permission (the
                         # VM is the sandbox); stdout is the final response (->
                         # report.md), --print-logs puts the session log on
-                        # stderr (-> agent.log). Model is a provider/model slug
-                        # — in this fleet that means openrouter/<vendor>/<model>,
-                        # authed by OPENROUTER_API_KEY from /run/agent-env.
+                        # stderr (-> agent.log). Model is a provider/model slug:
+                        # openrouter/<vendor>/<model> (authed by
+                        # OPENROUTER_API_KEY from /run/agent-env) or
+                        # local/<name> (the host's llama-swap catalog, via
+                        # $OPENCODE_CONFIG — free, ship-local tokens).
                         # effort maps to --variant (provider-specific reasoning
                         # effort; only pass it for models that have variants).
                         opencode run \

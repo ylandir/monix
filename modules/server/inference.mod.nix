@@ -42,7 +42,7 @@
     }:
     let
       inherit (lib.attrsets) mapAttrs;
-      inherit (lib.lists) singleton;
+      inherit (lib.lists) optionals singleton;
       inherit (lib.meta) getExe';
       inherit (lib.modules) mkIf;
       inherit (lib.options) mkEnableOption mkOption;
@@ -170,14 +170,18 @@
 
           # Anti-pivot egress fence (cf. minecraft.mod.nix, but tighter: no
           # public internet at all). Allow loopback — llama-swap reaches its
-          # spawned llama-servers over 127.0.0.1 — and the tailnet its
-          # clients live on; deny everything else, inbound and out. When the
-          # fleet guests get access, 10.100.0.1 arrives via a bridge
-          # firewall pinhole + an allow for 10.100.0.0/24 here.
+          # spawned llama-servers over 127.0.0.1 — the tailnet its human
+          # clients live on, and (only when this host also runs the agent
+          # fleet) the guest bridge subnet, so drones can call local models
+          # through the matching br-agents pinhole (microvm-host.mod.nix).
+          # Deny everything else, inbound and out.
           IPAddressAllow = [
             "127.0.0.0/8"
             "::1"
             "100.64.0.0/10" # tailnet (CGNAT range)
+          ]
+          ++ optionals config.agentFleet.enable [
+            "10.100.0.0/24" # the br-agents guest subnet (see microvm-host.mod.nix)
           ];
           IPAddressDeny = "any";
         };

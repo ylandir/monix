@@ -119,12 +119,19 @@
           bridgeConfig.Isolated = true;
         };
 
-        # EGRESS FIREWALL — from the bridge, guests may reach ONLY squid.
+        # EGRESS FIREWALL — from the bridge, guests may reach ONLY squid, plus
+        # (when the host serves local inference) the llama-swap endpoint: a
+        # deliberate pinhole so drones can call the ship's own models. That
+        # service is the second host process parsing untrusted guest bytes
+        # (squid is the first) and is sandboxed accordingly (inference.mod.nix).
         # br-agents is deliberately NOT a trusted interface, so the default
         # DROP handles everything else (incl. DNS/53 and the host's sshd). No
         # IP forwarding is enabled anywhere, so even this is belt-and-braces:
         # guests have no route off the bridge regardless.
-        networking.firewall.interfaces.${bridge}.allowedTCPPorts = [ 3128 ];
+        networking.firewall.interfaces.${bridge}.allowedTCPPorts = [
+          3128
+        ]
+        ++ lib.lists.optionals config.inference.enable [ config.inference.port ];
 
         # SQUID — the single audited egress point. Bound to the bridge IP only.
         services.squid = {
