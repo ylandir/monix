@@ -144,6 +144,7 @@
         home.packages = [
           pkgs.claude-code
           pkgs.codex
+          pkgs.opencode
           pkgs.hugo
           # The codex Claude Code plugin's hooks invoke `node` directly.
           pkgs.nodejs
