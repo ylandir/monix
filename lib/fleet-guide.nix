@@ -132,7 +132,8 @@
                               #     catalog (e.g. openrouter/moonshotai/kimi-k2), metered;
                               #   local/<name> — the ship's own llama-swap catalog on the
                               #     host GPU, free tokens; names come from inference.models
-                              #     in the monix config (none declared = nothing to dispatch).
+                              #     in the monix config. Current catalog: local/qwen3.6-35b-a3b
+                              #     (fast default) and local/gpt-oss-120b (larger reasoning).
         guidance: <model-id>  # optional Claude model id for today's advisor backend.
                               # `none` or omitted => no advisor. Cross-provider guidance
                               # is not implemented; do not put Codex/OpenCode ids here.
