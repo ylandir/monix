@@ -99,6 +99,13 @@ in
           else
             null;
 
+        # The budget chat bot (budgetbot.mod.nix): lives in the family
+        # Budget room, parses purchases with local inference into its own
+        # SQLite ledger, answers questions and posts charts. Loopback-only.
+        budgetbot.enable = true;
+        budgetbot.roomId = "!HdomhXWkT2WNHYZI5p:chat.su.is";
+        budgetbot.credentialsEnvFile = config.secrets.matrix-budgetbot-env.path;
+
         # opencode web UI cockpit seat, exposed through Cloudflare Tunnel.
         # Authentication belongs at the Cloudflare Access layer; do not set
         # cockpit.webEnvFile here unless deliberately re-enabling opencode's
@@ -134,6 +141,9 @@ in
           };
           matrix-registration-env = {
             file = ./matrix-registration.env.age;
+          };
+          matrix-budgetbot-env = {
+            file = ./matrix-budgetbot.env.age;
           };
         }
         // lib.optionalAttrs (builtins.pathExists ./matrix-cloudflare-tunnel-token.age) {
