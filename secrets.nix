@@ -25,6 +25,7 @@ in
   "hosts/fw0/actual-cloudflare-tunnel-token.age".publicKeys = [ fw0 ] ++ admin;
   "hosts/fw0/matrix-registration.env.age".publicKeys = [ fw0 ] ++ admin;
   "hosts/fw0/matrix-cloudflare-tunnel-token.age".publicKeys = [ fw0 ] ++ admin;
+  "hosts/fw0/matrix-budgetbot.env.age".publicKeys = [ fw0 ] ++ admin;
   "hosts/fw0/litellm.env.age".publicKeys = [ fw0 ] ++ admin;
   "hosts/fw0/open-webui.env.age".publicKeys = [ fw0 ] ++ admin;
 }
