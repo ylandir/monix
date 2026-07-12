@@ -171,6 +171,10 @@
         # here, so their DMS counterparts are not wired in.
         systemd.user.tmpfiles.rules = [
           "f %h/.config/hypr/dms/outputs.lua 0644 - - -"
+          # Cursor theme/size are DMS-owned the same way (Settings → cursor):
+          # DMS writes hl.env lines to cursor.lua and runs hyprctl setcursor.
+          # The theme package itself is installed by cursor.mod.nix.
+          "f %h/.config/hypr/dms/cursor.lua 0644 - - -"
         ];
 
         wayland.windowManager.hyprland = {
@@ -215,16 +219,14 @@
           # layout instead.
           extraConfig = ''
             pcall(require, "dms.outputs")
+            pcall(require, "dms.cursor")
           '';
 
           settings = {
             env = [
               (mkEnv "GDK_SCALE" "2")
-              (mkEnv "XCURSOR_SIZE" "24")
-              (mkEnv "HYPRCURSOR_SIZE" "24")
-              # Theme installed + GTK/hyprcursor config via cursor.mod.nix.
-              (mkEnv "XCURSOR_THEME" "Bibata-Modern-Classic")
-              (mkEnv "HYPRCURSOR_THEME" "Bibata-Modern-Classic")
+              # Cursor theme/size env comes from DMS's dms/cursor.lua (see
+              # the tmpfiles rule above), not static config.
               (mkEnv "GDK_BACKEND" "wayland")
               (mkEnv "QT_QPA_PLATFORM" "wayland")
               # qt6ct(-kde) so DMS's "Apply Qt Themes" colors reach Qt apps

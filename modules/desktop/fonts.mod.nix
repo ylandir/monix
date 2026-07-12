@@ -36,8 +36,10 @@
             text = ''
               rm -rf /var/lib/fonts/comic-code
               mkdir -p /var/lib/fonts/comic-code
-              ${pkgs.gnutar}/bin/tar xzf "${config.secrets.comic-code.path}" \
-                -C /var/lib/fonts/comic-code
+              # activation runs with a minimal PATH: tar can't shell out to a
+              # gzip it can't find, so hand it the store path explicitly
+              ${pkgs.gnutar}/bin/tar --use-compress-program=${pkgs.gzip}/bin/gzip \
+                -xf "${config.secrets.comic-code.path}" -C /var/lib/fonts/comic-code
               chmod -R a+rX /var/lib/fonts/comic-code
             '';
           };
