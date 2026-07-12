@@ -16,7 +16,7 @@
       ...
     }:
     let
-      guide = import ../lib/fleet-guide.nix;
+      guide = import ../../lib/fleet-guide.nix;
       inherit (lib.modules) mkIf;
     in
     {

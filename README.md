@@ -34,8 +34,8 @@ session).
 The folders under `modules/` are namespacing only (discovery is by the
 `.mod.nix` suffix, not location): `core/` is the every-host base layer,
 `cli/` terminal tools, `desktop/` the graphical session, `networking/` and
-`server/` what their names say. `packages.mod.nix` and `cockpit.mod.nix`
-sit at the root because they span categories.
+`server/` what their names say. `packages.mod.nix` sits at the root because
+its bundles span categories.
 
 `lib/` extends nixpkgs' lib under its own namespace. `lib.monix.nixosSystem
 "<name>" <module>` defines `nixosConfigurations.<name>`.
