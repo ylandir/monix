@@ -18,10 +18,21 @@
       ...
     }:
     let
-      inherit (lib.modules) mkIf;
+      inherit (lib.modules) mkIf mkForce;
     in
     {
       config = mkIf osConfig.isDesktop {
+        # Upstream's onChange hook runs `ghostty +validate-config` with no
+        # error tolerance, and ghostty's user unit reloads via SIGUSR2
+        # (Type=notify-reload). During activation that signal can land on the
+        # short-lived validate process instead, killing the whole activation
+        # (exit 140 = 128+SIGUSR2). The config is Nix-generated, so validation
+        # is redundant: replace the hook with a non-fatal reload of the
+        # running daemon (no-op when the user session/daemon isn't up).
+        xdg.configFile."ghostty/config".onChange = mkForce ''
+          ${pkgs.systemd}/bin/systemctl --user try-reload-or-restart app-com.mitchellh.ghostty.service 2>/dev/null || true
+        '';
+
         programs.ghostty = {
           enable = true;
 
