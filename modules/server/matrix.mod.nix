@@ -118,6 +118,10 @@
             allow_federation = false;
             allow_registration = true; # token-gated via the env secret
             allow_encryption = true;
+            # tuwunel's default appends "💕" to every new account's display
+            # name (uwu heritage; key verified in the 1.8.0 binary).
+            # Existing accounts keep whatever name they have.
+            new_user_displayname_suffix = "";
             # Federation is off; don't name notary key servers at all.
             trusted_servers = [ ];
             # (URL previews — an SSRF-shaped feature — are OFF by tuwunel

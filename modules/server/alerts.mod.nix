@@ -54,6 +54,12 @@
           curl -sf -X POST -H "Authorization: Bearer $tok" \
             "$hs/_matrix/client/v3/join/$room" -d '{}' > /dev/null || true
 
+          # Idempotent self-rename: registration appended tuwunel's default
+          # display-name suffix; keep the bot's name plain.
+          curl -sf -X PUT -H "Authorization: Bearer $tok" \
+            "$hs/_matrix/client/v3/profile/$(jq -rn --arg u "$MATRIX_USER" '$u|@uri')/displayname" \
+            -d '{"displayname":"alertbot"}' > /dev/null || true
+
           curl -sf -X PUT -H "Authorization: Bearer $tok" \
             "$hs/_matrix/client/v3/rooms/$room/send/m.room.message/$(date +%s%N)" \
             -d "$(jq -n --arg b "$1" '{msgtype:"m.text",body:$b}')" > /dev/null
