@@ -227,16 +227,22 @@
             ProtectSystem = "strict";
           };
           script = ''
+            # Three attempts per URL: a single timeout or Cloudflare hiccup
+            # is not dashboard drift, and since unit failures page the alert
+            # room (alerts.mod.nix) a one-shot probe was too trigger-happy.
+            # An endpoint that actually answers without demanding Access
+            # still fails every attempt and alerts within the same run.
             check() {
-              result="$(curl --silent --show-error --max-time 20 --output /dev/null \
-                --write-out '%{http_code} %{redirect_url}' "$1")"
-              case "$result" in
-                302\ https://*.cloudflareaccess.com/*) ;;
-                *)
-                  echo "Cloudflare Access check failed for $1: $result" >&2
-                  exit 1
-                  ;;
-              esac
+              for attempt in 1 2 3; do
+                [ "$attempt" -gt 1 ] && sleep 10
+                result="$(curl --silent --show-error --max-time 20 --output /dev/null \
+                  --write-out '%{http_code} %{redirect_url}' "$1")" || result="curl error"
+                case "$result" in
+                  302\ https://*.cloudflareaccess.com/*) return 0 ;;
+                esac
+              done
+              echo "Cloudflare Access check failed for $1: $result" >&2
+              exit 1
             }
             check https://ai.su.is/
             check https://ai.su.is/session
