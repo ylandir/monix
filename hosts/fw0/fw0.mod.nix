@@ -37,17 +37,13 @@ in
 
         primaryUser = "max";
 
-        # Declarative login password, same shape as fw3 (see the comment in
-        # fw3.mod.nix): /etc/shadow regenerates from config once the hash
-        # secret exists — until then users stay mutable, because
-        # mutableUsers = false with no declared password locks the account.
-        # TO ENABLE: mkpasswd -m yescrypt, then
-        # `agenix -e hosts/fw0/secrets/max-password.age` (rule already in
-        # secrets.nix), git add, switch with a root shell kept open.
-        users.mutableUsers = !builtins.pathExists ./secrets/max-password.age;
+        # Declarative login password, same shape and rationale as fw3 (see
+        # the comment in fw3.mod.nix). Deliberately NOT gated on the .age
+        # existing: past bootstrap, a missing secret should be a loud eval
+        # error, not a silent fallback to mutable users.
+        users.mutableUsers = false;
         users.users.${config.primaryUser}.hashedPasswordFile =
-          lib.mkIf (builtins.pathExists ./secrets/max-password.age)
-            config.secrets.max-password.path;
+          config.secrets.max-password.path;
 
         # The primary interactive agent cockpit lives here; frontends include
         # tmux over tailnet SSH and opencode web through Cloudflare Access.
@@ -140,6 +136,9 @@ in
         # cockpit hosts). Workers have no forge route or credentials: source
         # context goes in as a capsule and results come back over the task share.
         secrets = {
+          # Login password hash (see the declarative-password comment above).
+          max-password.file = ./secrets/max-password.age;
+
           agent-claude-token.file = ./secrets/agent-claude-token.age;
           agent-codex-auth.file = ./secrets/agent-codex-auth.age;
         }
@@ -167,10 +166,6 @@ in
           matrix-cloudflare-tunnel-token = {
             file = ./secrets/matrix-cloudflare-tunnel-token.age;
           };
-        }
-        // lib.optionalAttrs (builtins.pathExists ./secrets/max-password.age) {
-          # Login password hash (see the declarative-password comment above).
-          max-password.file = ./secrets/max-password.age;
         };
 
         # agenix in this input has no restartUnits option; make the encrypted
