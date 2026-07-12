@@ -10,8 +10,9 @@
 #      boot, creeping disk usage).
 #
 # Delivery is a curl script against the LOOPBACK homeserver (tuwunel :6167,
-# same egress story as budgetbot): password login, join (idempotent), send,
-# logout (so devices don't accumulate). The bot holds exactly one
+# same egress story as budgetbot): password login, send, logout (so devices
+# don't accumulate); first run also joins the room and strips tuwunel's
+# display-name suffix, stamped in StateDirectory. The bot holds exactly one
 # credential — its own Matrix account. If the homeserver itself is down,
 # alerts can't send; accepted — meta-monitoring needs an off-host watcher,
 # which this deliberately is not.
