@@ -84,11 +84,14 @@
 
     ## Ship status
 
-    When the captain says **ship status** in any AI chat, run `ship-status` and
-    return its complete dashboard verbatim in a fenced text block. Do not replace
-    it with an improvised summary. The command is also available directly in a
-    terminal and shows host resources, service health, active agent tasks, the
-    warm VM pool, and Minecraft players.
+    When the captain says **ship status** in any AI chat, run `ship-status`
+    (short alias `ship`) and return its complete dashboard verbatim in a fenced
+    text block. Do not replace it with an improvised summary. The command is
+    also available directly in a terminal; its sections are ship systems —
+    BRIDGE (host), REACTOR (memory domains), SYSTEMS (services), DRONE BAY (the
+    fleet), LEDGER (API-equivalent spend, from `ship-costs`), REC DECK
+    (Minecraft) — and the layout is responsive (wide on desktop, stacked on a
+    phone). `ship-costs` still runs standalone for just the spend ledger.
 
     ## Your role as engineer
 

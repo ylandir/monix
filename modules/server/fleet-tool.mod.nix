@@ -544,119 +544,164 @@
         '';
       };
 
-      shipStatus = pkgs.writeShellApplication {
-        name = "ship-status";
-        runtimeInputs = [
-          pkgs.coreutils
-          pkgs.gawk
-          pkgs.gnugrep
-          pkgs.mcstatus
-          pkgs.procps
-          pkgs.systemd
-          pkgs.tailscale
-          pkgs.util-linux
-        ];
-        text = ''
-          if [ -t 1 ] && [ -z "''${NO_COLOR:-}" ]; then
-            bold=$'\e[1m'; dim=$'\e[2m'; cyan=$'\e[36m'; green=$'\e[32m'
-            yellow=$'\e[33m'; red=$'\e[31m'; reset=$'\e[0m'
-          else
-            bold=; dim=; cyan=; green=; yellow=; red=; reset=
-          fi
-
-          bytes() {
-            if [ "''${1:-}" = "[not set]" ] || [ -z "''${1:-}" ]; then printf 'n/a';
-            else numfmt --to=iec --suffix=B "$1" 2>/dev/null || printf 'n/a'; fi
+      # ship-status — the combined ship dashboard, in nushell. Sections are
+      # ship systems: BRIDGE (host), REACTOR (memory domains), SYSTEMS
+      # (services), DRONE BAY (the fleet), LEDGER (spend, embeds ship-costs),
+      # REC DECK (minecraft). Responsive: a wide boxed grid on desktop, stacked
+      # single-column on a phone (nu `term size`; SHIP_COLS overrides). Installed
+      # as both `ship-status` (the ritual name) and `ship` (short alias).
+      shipStatus = pkgs.writeScriptBin "ship-status" ''
+        #!${lib.getExe pkgs.nushell}
+        def esc [name: string] {
+          if ($env.NO_COLOR? | default "" | is-not-empty) { "" } else { (ansi $name) }
+        }
+        def bytes [b] {
+          if ($b | describe) == "nothing" { return "n/a" }
+          let s = ($b | into string | str trim)
+          if $s == "" or $s == "[not set]" { return "n/a" }
+          try { $s | into int | into filesize | into string } catch { "n/a" }
+        }
+        def dur [secs] {
+          let s = ($secs | into int)
+          let d = ($s / 86400 | math floor)
+          let h = (($s mod 86400) / 3600 | math floor)
+          let m = (($s mod 3600) / 60 | math floor)
+          let sec = ($s mod 60)
+          if $d > 0 { $"($d)d ($h)h" } else if $h > 0 { $"($h)h ($m)m" } else if $m > 0 { $"($m)m ($sec)s" } else { $"($sec)s" }
+        }
+        def svc [u: string] {
+          let v = (^systemctl is-active $u | complete | get stdout | str trim)
+          if $v == "active" { $"(esc green)● active(esc reset)" } else if $v == "activating" { $"(esc yellow)◐ starting(esc reset)" } else { $"(esc red)● ($v)(esc reset)" }
+        }
+        def rule [lc: string, rc: string, title: string, bw: int, style: string] {
+          let d = (if ($title | is-empty) { $bw - 2 } else { $bw - 5 - ($title | str length) })
+          let d = (if $d < 0 { 0 } else { $d })
+          let dash = (0..<$d | each { "─" } | str join)
+          let col = (esc $style)
+          if ($title | is-empty) {
+            print $"($col)($lc)($dash)($rc)(esc reset)"
+          } else {
+            print $"($col)($lc)─ ($title) ($dash)($rc)(esc reset)"
           }
-          state() {
-            local value
-            value="$(systemctl is-active "$1" 2>/dev/null || true)"
-            case "$value" in
-              active) printf '%s● active%s' "$green" "$reset" ;;
-              activating) printf '%s◐ starting%s' "$yellow" "$reset" ;;
-              *) printf '%s● %s%s' "$red" "''${value:-missing}" "$reset" ;;
-            esac
+        }
+        def main [] {
+          $env.PATH = $"${lib.makeBinPath [ pkgs.coreutils pkgs.systemd pkgs.mcstatus pkgs.tailscale ]}:/run/current-system/sw/bin"
+          let cols = (try { term size | get columns } catch { 80 })
+          let cols = ($env.SHIP_COLS? | default $cols | into int)
+          let cols = (if $cols < 20 { 80 } else { $cols })
+          let narrow = ($cols < 74)
+          let bw = ([$cols 78] | math min)
+          let workers = [${lib.concatMapStringsSep " " (w: w.name) cfg.workers}]
+
+          let up = (open /proc/uptime | split row " " | first | into float | into int)
+          let load = (open /proc/loadavg | split row " " | first 3 | str join " ")
+          let mi = (open /proc/meminfo | lines | parse "{k}:{v}")
+          let mt = ($mi | where k == MemTotal | get v.0 | str trim | split row " " | first | into int) * 1024
+          let ma = ($mi | where k == MemAvailable | get v.0 | str trim | split row " " | first | into int) * 1024
+          let mu = ($mt - $ma)
+          let kernel = (^uname -r | str trim)
+          let host = (sys host | get hostname)
+          let cpu = (open /proc/cpuinfo | lines | where ($it | str starts-with "model name") | first | split row ": " | last | str replace --regex " w/.*" "")
+          let threads = (^nproc | str trim)
+          let rd = (^df -hP / | lines | last | split row --regex '\s+')
+          let root = $"($rd.2) / ($rd.1)  \(($rd.4)\)"
+          let failed = (^systemctl --failed --no-legend --no-pager | lines | where ($it | str trim | is-not-empty) | length)
+          let gen = (^readlink -f /run/current-system | str trim | str replace "/nix/store/" "")
+
+          rule "╭" "╮" "THE KESTREL // SHIP STATUS" $bw "cyan_bold"
+          if $narrow {
+            print $"│ (esc attr_bold)BRIDGE(esc reset) ($host) · up (dur $up)"
+            print $"│ kernel ($kernel) · load ($load)"
+            print $"│ ($cpu) · ($threads) threads"
+            print $"│ mem (bytes $mu) / (bytes $mt) · failed ($failed)"
+            print $"│ root ($root)"
+            print $"│ (esc attr_dimmed)gen(esc reset) …($gen | str substring (-24..))"
+          } else {
+            print $"│ (esc attr_bold)BRIDGE(esc reset) ($host | fill -w 16) kernel ($kernel | fill -w 12) up ((dur $up) | fill -w 9) load ($load)"
+            print $"│        silicon ($cpu) · ($threads) threads"
+            print $"│        memory (bytes $mu) / (bytes $mt)   root ($root)   failed units ($failed)"
+            print $"│        (esc attr_dimmed)generation(esc reset) ($gen)"
           }
-          duration() {
-            local total="''${1:-0}" d h m s
-            d=$((total / 86400)); h=$(((total % 86400) / 3600))
-            m=$(((total % 3600) / 60)); s=$((total % 60))
-            if [ "$d" -gt 0 ]; then printf '%dd %02dh' "$d" "$h"
-            elif [ "$h" -gt 0 ]; then printf '%dh %02dm' "$h" "$m"
-            elif [ "$m" -gt 0 ]; then printf '%dm %02ds' "$m" "$s"
-            else printf '%ds' "$s"; fi
+
+          rule "├" "┤" "REACTOR" $bw "cyan"
+          for sl in [cockpit.slice agents.slice inference.slice services.slice] {
+            let cur = (^systemctl show $sl -p MemoryCurrent --value | str trim)
+            let pk = (^systemctl show $sl -p MemoryPeak --value | str trim)
+            if $narrow {
+              print $"│ ($sl | str replace ".slice" "" | fill -w 10) (bytes $cur) / (bytes $pk) peak"
+            } else {
+              print $"│ ($sl | fill -w 18) current ((bytes $cur) | fill -w 9 -a right)   peak ((bytes $pk) | fill -w 9 -a right)"
+            }
           }
 
-          read -r _ up _ < /proc/uptime; up="''${up%.*}"
-          read -r load1 load5 load15 _ < /proc/loadavg
-          mem_total="$(awk '/^MemTotal:/ {print $2 * 1024}' /proc/meminfo)"
-          mem_avail="$(awk '/^MemAvailable:/ {print $2 * 1024}' /proc/meminfo)"
-          mem_used=$((mem_total - mem_avail))
-          root_disk="$(df -hP / | awk 'NR==2 {print $3 " / " $2 "  (" $5 ")"}')"
-          generation="$(readlink -f /run/current-system)"; generation="''${generation#/nix/store/}"
-          failed_units="$(systemctl --failed --no-legend --no-pager | wc -l)"
+          rule "├" "┤" "SYSTEMS" $bw "cyan"
+          if $narrow {
+            print $"│ cockpit (svc opencode-web.service)  nginx (svc nginx.service)"
+            print $"│ tunnel (svc opencode-web-tunnel.service)  squid (svc squid.service)"
+            print $"│ inference (svc llama-swap.service)  tailscale (svc tailscaled.service)"
+          } else {
+            print $"│ cockpit (svc opencode-web.service | fill -w 14) tunnel (svc opencode-web-tunnel.service | fill -w 14) inference (svc llama-swap.service)"
+            print $"│ nginx   (svc nginx.service | fill -w 14) squid  (svc squid.service | fill -w 14) tailscale (svc tailscaled.service)"
+          }
 
-          printf '%s╭─ THE KESTREL // SHIP STATUS ─────────────────────────────────────────────╮%s\n' "$cyan$bold" "$reset"
-          printf '│ %sHOST%s  %-16s kernel %-12s up %-9s load %s %s %s\n' \
-            "$bold" "$reset" "$(hostname)" "$(uname -r)" "$(duration "$up")" "$load1" "$load5" "$load15"
-          cpu="$(awk -F': ' '/^model name/ {print $2; exit}' /proc/cpuinfo)"
-          printf '│       silicon %s · %s threads\n' "$cpu" "$(nproc)"
-          printf '│       memory %-19s root %-22s failed units %s\n' \
-            "$(bytes "$mem_used") / $(bytes "$mem_total")" "$root_disk" "$failed_units"
-          printf '│       %sgeneration%s %s\n' "$dim" "$reset" "$generation"
+          rule "├" "┤" "DRONE BAY" $bw "cyan"
+          let active = (try { ^/run/wrappers/bin/sudo -n -u ${op} ${fleetPath} active | complete | get stdout } catch { "" })
+          let atbl = ($active | lines | where ($it | str trim | is-not-empty) | parse "{w}\t{id}\t{agent}\t{model}\t{age}")
+          mut warm = 0
+          mut starting = 0
+          mut failed_w = 0
+          for b in $workers {
+            let st = (^systemctl is-active $"microvm@($b).service" | complete | get stdout | str trim)
+            let row = ($atbl | where w == $b)
+            let marker = (if $st == "active" { $"(esc green)●(esc reset)" } else if $st == "activating" { $"(esc yellow)◐(esc reset)" } else { $"(esc red)●(esc reset)" })
+            if $st == "active" { $warm = $warm + 1 } else if $st == "activating" { $starting = $starting + 1 } else { $failed_w = $failed_w + 1 }
+            if ($row | length) > 0 {
+              let r = ($row | first)
+              if $narrow {
+                print $"│ ($marker) ($b | fill -w 11) ($r.agent) ($r.model)"
+                print $"│   (dur $r.age)  ($r.id)"
+              } else {
+                print $"│ ($marker) ($b | fill -w 11) ($r.agent | fill -w 7) ($r.model | fill -w 24) ((dur $r.age) | fill -w 8 -a right)  ($r.id)"
+              }
+            } else if $st == "active" {
+              print $"│ ($marker) ($b | fill -w 11) (esc attr_dimmed)idle(esc reset)"
+            } else {
+              print $"│ ($marker) ($b | fill -w 11) ($st)"
+            }
+          }
+          print $"│ pool (esc attr_bold)($warm)/($workers | length) warm(esc reset)  (esc yellow)($starting) starting(esc reset)  (esc red)($failed_w) failed(esc reset)"
 
-          printf '%s├─ RESOURCE DOMAINS ──────────────────────────────────────────────────────┤%s\n' "$cyan" "$reset"
-          for slice in cockpit.slice agents.slice inference.slice services.slice; do
-            current="$(systemctl show "$slice" -p MemoryCurrent --value 2>/dev/null || true)"
-            peak="$(systemctl show "$slice" -p MemoryPeak --value 2>/dev/null || true)"
-            printf '│ %-18s current %9s   peak %9s\n' "$slice" "$(bytes "$current")" "$(bytes "$peak")"
-          done
+          rule "├" "┤" "LEDGER" $bw "cyan"
+          let cw = ($bw - 2 | into string)
+          let costs = (with-env { COLUMNS: $cw, NO_COLOR: "1" } { try { ^ship-costs --bare | complete | get stdout } catch { "(ship-costs unavailable)" } })
+          for line in ($costs | lines) {
+            if ($line | str trim | is-empty) { print "│" } else { print $"│ ($line)" }
+          }
 
-          printf '%s├─ SERVICES ──────────────────────────────────────────────────────────────┤%s\n' "$cyan" "$reset"
-          printf '│ cockpit %-14s tunnel %-14s inference %-14s\n' \
-            "$(state opencode-web.service)" "$(state opencode-web-tunnel.service)" "$(state llama-swap.service)"
-          printf '│ nginx   %-14s squid  %-14s tailscale %-14s\n' \
-            "$(state nginx.service)" "$(state squid.service)" "$(state tailscaled.service)"
+          rule "├" "┤" "REC DECK" $bw "cyan"
+          let tip = (try { ^tailscale ip -4 | lines | first | str trim } catch { "" })
+          let mc = (if ($tip | is-not-empty) { try { ^mcstatus $"($tip):25565" status | complete | get stdout } catch { "" } } else { "" })
+          let mcget = {|k| ($mc | lines | parse "{key}: {val}" | where key == $k | get val.0? | default "n/a") }
+          let players = (do $mcget "players")
+          let ver = (do $mcget "version" | str replace --regex ' \(protocol.*' "")
+          let ping = (do $mcget "ping")
+          let mcmem = (^systemctl show minecraft-server-main.service -p MemoryCurrent --value | str trim)
+          if $narrow {
+            print $"│ server (svc minecraft-server-main.service) · players ($players)"
+            print $"│ ($ver) · ping ($ping) · (bytes $mcmem)"
+          } else {
+            print $"│ server (svc minecraft-server-main.service | fill -w 14) players ($players | fill -w 7) version ($ver | fill -w 14) ping ($ping | fill -w 10) memory (bytes $mcmem)"
+          }
 
-          printf '%s├─ AGENT FLEET ───────────────────────────────────────────────────────────┤%s\n' "$cyan" "$reset"
-          active_file="$(mktemp)"; trap 'rm -f "$active_file"' EXIT
-          # The dashboard user intentionally owns this temporary output file.
-          # shellcheck disable=SC2024
-          /run/wrappers/bin/sudo -n -u ${op} ${fleetPath} active > "$active_file" 2>/dev/null || true
-          warm=0; starting=0; failed=0
-          ${lib.strings.concatMapStringsSep "\n" (w: ''
-            worker_state="$(systemctl is-active microvm@${w.name}.service 2>/dev/null || true)"
-            task="$(awk -F '\t' '$1=="${w.name}" {print $2 "\t" $3 "\t" $4 "\t" $5; exit}' "$active_file")"
-            case "$worker_state" in
-              active) warm=$((warm + 1)); marker="$green●$reset" ;;
-              activating) starting=$((starting + 1)); marker="$yellow◐$reset" ;;
-              *) failed=$((failed + 1)); marker="$red●$reset" ;;
-            esac
-            if [ -n "$task" ]; then
-              IFS=$'\t' read -r task_id task_agent task_model task_age <<< "$task"
-              printf '│ %s %-9s %-7s %-24s %8s  %s\n' "$marker" "${w.name}" "$task_agent" "$task_model" "$(duration "$task_age")" "$task_id"
-            elif [ "$worker_state" = active ]; then
-              printf '│ %s %-9s %sidle%s\n' "$marker" "${w.name}" "$dim" "$reset"
-            else
-              printf '│ %s %-9s %s\n' "$marker" "${w.name}" "$worker_state"
-            fi
-          '') cfg.workers}
-          printf '│ pool %s%d/%d warm%s  %s%d starting%s  %s%d failed%s\n' \
-            "$bold" "$warm" "${toString (lib.lists.length cfg.workers)}" "$reset" \
-            "$yellow" "$starting" "$reset" "$red" "$failed" "$reset"
+          rule "╰" "╯" "" $bw "cyan_bold"
+        }
+      '';
 
-          printf '%s├─ MINECRAFT ─────────────────────────────────────────────────────────────┤%s\n' "$cyan" "$reset"
-          tail_ip="$(tailscale ip -4 2>/dev/null | awk 'NR==1 {print; exit}')"; mc=""
-          if [ -n "$tail_ip" ]; then mc="$(mcstatus "$tail_ip:25565" status 2>/dev/null || true)"; fi
-          players="$(printf '%s\n' "$mc" | awk -F': ' '$1=="players" {print $2}')"
-          version="$(printf '%s\n' "$mc" | awk -F': ' '$1=="version" {sub(/ \(protocol.*$/, "", $2); print $2}')"
-          ping="$(printf '%s\n' "$mc" | awk -F': ' '$1=="ping" {print $2}')"
-          mc_mem="$(systemctl show minecraft-server-main.service -p MemoryCurrent --value 2>/dev/null || true)"
-          printf '│ server %-14s players %-7s version %-14s ping %-10s memory %s\n' \
-            "$(state minecraft-server-main.service)" "''${players:-n/a}" "''${version:-n/a}" "''${ping:-n/a}" "$(bytes "$mc_mem")"
-          printf '%s╰──────────────────────────────────────────────────────────────────────────╯%s\n' "$cyan$bold" "$reset"
-        '';
-      };
+      # `ship` — short alias for the ritual `ship-status`.
+      shipAlias = pkgs.runCommand "ship-alias" { } ''
+        mkdir -p $out/bin
+        ln -s ${shipStatus}/bin/ship-status $out/bin/ship
+      '';
     in
     {
       options.agentFleet.operatorUser = mkOption {
@@ -682,7 +727,7 @@
         };
         users.users.${config.primaryUser}.extraGroups = [ readers ];
 
-        environment.systemPackages = [ fleet shipStatus ];
+        environment.systemPackages = [ fleet shipStatus shipAlias ];
 
         # The ONLY path from the cockpit account into the queue: run the fleet
         # tool as the operator. Scoped to this one binary, NOPASSWD so the

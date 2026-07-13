@@ -44,9 +44,17 @@
         import glob
         import json
         import os
+        import shutil
         import sqlite3
         import sys
+        import textwrap
         import urllib.request
+
+        # Responsive width: the wide table needs ~74 cols; below that (phones)
+        # we render each row as a compact stanza. get_terminal_size honors
+        # COLUMNS/ioctl and falls back to 80 when piped or headless.
+        COLS = shutil.get_terminal_size((80, 24)).columns
+        NARROW = COLS < 74
 
         HOME = os.path.expanduser("~")
         CLAUDE_DIR = os.path.join(HOME, ".claude", "projects")
@@ -310,18 +318,29 @@
                 except Exception as exc:  # one broken store must not kill the ledger
                     print(f"WARNING: {it.__name__} aborted: {exc}", file=sys.stderr)
 
-            print("SHIP COSTS — API-equivalent spend (subs bill flat; this is what the")
-            print("same usage would cost at API rates). Ship-side usage only; app chats")
-            print(f"are invisible. Windows: MTD since {MTD:%b %d}, rolling 30d.\n")
+            def emit(text):  # prose: wrap to width on narrow, verbatim on wide
+                print(textwrap.fill(text, COLS) if NARROW else text)
+
+            # --bare drops the standalone intro paragraph, for embedding under
+            # the LEDGER section of the combined `ship` dashboard.
+            if "--bare" not in sys.argv:
+                emit("SHIP COSTS — API-equivalent spend (subs bill flat; this is "
+                     "what the same usage would cost at API rates). Ship-side usage "
+                     f"only; app chats are invisible. Windows: MTD since {MTD:%b %d}, "
+                     "rolling 30d.")
+                print()
 
             d30 = windows["d30"]
             order = {"claude": 0, "chatgpt": 1, "openrouter": 2, "local": 3, "other": 4}
-            header = f"{'POOL':<11}{'MODEL':<28}{'SOURCE':<18}{'TOK(M)':>8}{'MTD $':>9}{'30D $':>9}"
-            print(header)
-            print("-" * len(header))
             totals = {"mtd": {}, "d30": {}}
             all_keys = set(d30) | set(windows["mtd"])  # MTD-only keys can exist on day 31
-            for key in sorted(all_keys, key=lambda k: (order.get(k[0], 9), k[1], k[2])):
+            sorted_keys = sorted(all_keys, key=lambda k: (order.get(k[0], 9), k[1], k[2]))
+
+            header = f"{'POOL':<11}{'MODEL':<28}{'SOURCE':<18}{'TOK(M)':>8}{'MTD $':>9}{'30D $':>9}"
+            if not NARROW:
+                print(header)
+                print("-" * len(header))
+            for key in sorted_keys:
                 pool, model, source = key
                 t30 = d30.get(key)
                 tmtd = windows["mtd"].get(key)
@@ -332,21 +351,34 @@
                 tsum = t30 or tmtd
                 mtok = (tsum["in"] + tsum["out"] + tsum["cr"] + tsum["cw5"] + tsum["cw1"]) / 1e6
                 star = "" if rates(model) or pool == "local" else " *"
-                print(f"{pool:<11}{model[:27]:<28}{source:<18}{mtok:>8.1f}"
-                      f"{usdmtd:>9.2f}{usd30:>9.2f}{star}")
-            print("-" * len(header))
-            for pool in sorted(totals["d30"], key=lambda p: order.get(p, 9)):
-                pad = " " * 49  # MODEL(28)+SOURCE(18)+TOK(8) minus len("TOTAL")
-                print(f"{pool:<11}TOTAL{pad}"
-                      f"{totals['mtd'].get(pool, 0):>9.2f}{totals['d30'][pool]:>9.2f}")
-            grand = sum(totals["d30"].values())
-            grandm = sum(totals["mtd"].values())
-            pad = " " * 54  # MODEL(28)+SOURCE(18)+TOK(8)
-            print(f"{'ALL':<11}{pad}{grandm:>9.2f}{grand:>9.2f}")
+                if NARROW:
+                    print(f"{pool}/{model[:27]} · {source}")
+                    print(f"  {mtok:.1f}M tok · MTD ''${usdmtd:.2f} · 30D ''${usd30:.2f}{star}")
+                else:
+                    print(f"{pool:<11}{model[:27]:<28}{source:<18}{mtok:>8.1f}"
+                          f"{usdmtd:>9.2f}{usd30:>9.2f}{star}")
+            if NARROW:
+                print("─" * COLS)
+                for pool in sorted(totals["d30"], key=lambda p: order.get(p, 9)):
+                    print(f"{pool:<9} MTD ''${totals['mtd'].get(pool, 0):.2f}"
+                          f" · 30D ''${totals['d30'][pool]:.2f}")
+                grand = sum(totals["d30"].values())
+                grandm = sum(totals["mtd"].values())
+                print(f"{'ALL':<9} MTD ''${grandm:.2f} · 30D ''${grand:.2f}")
+            else:
+                print("-" * len(header))
+                for pool in sorted(totals["d30"], key=lambda p: order.get(p, 9)):
+                    pad = " " * 49  # MODEL(28)+SOURCE(18)+TOK(8) minus len("TOTAL")
+                    print(f"{pool:<11}TOTAL{pad}"
+                          f"{totals['mtd'].get(pool, 0):>9.2f}{totals['d30'][pool]:>9.2f}")
+                grand = sum(totals["d30"].values())
+                grandm = sum(totals["mtd"].values())
+                pad = " " * 54  # MODEL(28)+SOURCE(18)+TOK(8)
+                print(f"{'ALL':<11}{pad}{grandm:>9.2f}{grand:>9.2f}")
             print("\n* no pricing entry — token counts real, cost not estimated")
             tasks, with_usage = fleet_coverage()
-            print(f"DRONES: usage recorded for {with_usage} of {tasks} archived tasks"
-                  " (recording began 2026-07-12; earlier tasks left no token data)")
+            emit(f"DRONES: usage recorded for {with_usage} of {tasks} archived "
+                 "tasks (recording began 2026-07-12; earlier tasks left no token data)")
 
             exact = openrouter_exact()
             if exact is not None:
@@ -366,10 +398,15 @@
                     if rts >= MTD:
                         entry[1] += row.get("usage", 0)
                 for model, (u30, umtd) in sorted(by_model.items()):
-                    print(f"  {model:<40}{umtd:>9.2f}{u30:>9.2f}")
+                    if NARROW:
+                        print(f"  {model}")
+                        print(f"    MTD ''${umtd:.2f} · 30D ''${u30:.2f}")
+                    else:
+                        print(f"  {model:<40}{umtd:>9.2f}{u30:>9.2f}")
             elif OPENROUTER_KEY_FILE:
-                print("\nOPENROUTER: key configured but API query failed (see above table")
-                print("for opencode-recorded costs).")
+                print()
+                emit("OPENROUTER: key configured but API query failed (see the "
+                     "above table for opencode-recorded costs).")
 
             g = iter_codex.gauge
             print()
@@ -384,12 +421,13 @@
                         label = f"{wm // 60}h" if wm < 10080 else f"{wm // 1440}d"
                         parts.append(f"{label} window {w.get('used_percent', '?')}% used")
                 plan = rl.get("plan_type", "?")
-                print(f"CHATGPT PLAN ({plan}): " + "; ".join(parts)
-                      + f"  [as of last codex turn, {age.total_seconds() / 3600:.1f}h ago]")
+                emit(f"CHATGPT PLAN ({plan}): " + "; ".join(parts)
+                     + f"  [as of last codex turn, {age.total_seconds() / 3600:.1f}h ago]")
             else:
                 print("CHATGPT PLAN: no codex sessions found for a limit gauge")
-            print("CLAUDE PLAN: account-wide window not exposed on disk — check /usage")
-            print("in Claude Code (that gauge includes app chats; this ledger doesn't).")
+            emit("CLAUDE PLAN: account-wide window not exposed on disk — check "
+                 "/usage in Claude Code (that gauge includes app chats; this "
+                 "ledger doesn't).")
 
 
         if __name__ == "__main__":
