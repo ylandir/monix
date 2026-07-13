@@ -123,7 +123,39 @@ proxy, executor-specific Unix credentials, bounded host-file exchange, and
 fleet-wide resource limits. They have no forge access: the cockpit supplies a
 source capsule and receives a report plus patch. The primary cockpit is
 available through tmux/SSH and at `ai.su.is` through Cloudflare Access. See
-[docs/agent-fleet.md](docs/agent-fleet.md).
+[docs/agent-fleet.md](docs/agent-fleet.md) for mechanics and trust boundaries.
+
+How a task moves through the system, end to end:
+
+```mermaid
+flowchart TD
+    CAP([Captain states a goal]) --> CKPT{"Cockpit:\nhow to do this?"}
+
+    CKPT -->|"clarify / decision only the\ncaptain can make (taste, scope,\ndestructive, push, switch)"| ASK[Ask the captain] --> CAP
+    CKPT -->|"small, local, or depends on\nunpushed/private host state"| LOCAL[Do it in the cockpit session]
+    CKPT -->|substantial + self-contained| PLAN["Write task file:\nchoose agent + model + effort\n+ guidance per task"]
+
+    PLAN --> DISPATCH[fleet dispatch / submit\nvia scoped sudo → queue]
+    DISPATCH --> DRONE[Drone runs the task\nin a warm microVM]
+
+    DRONE <-->|"peek / steer /\nescalate / answer"| MID[Mid-task interaction\nwith the cockpit]
+    DRONE --> RESULT["Archive: report, log, patch,\nusage, progress, messages, Q&A"]
+
+    RESULT --> REVIEW{Cockpit reviews\nUNTRUSTED output}
+    REVIEW -->|inadequate / failed| PLAN
+    REVIEW -->|"needs a stronger model\nor different provider"| PLAN
+    REVIEW -->|good| APPLY[Apply patch, verify,\ncommit locally]
+
+    LOCAL --> VERIFY["Verify: build / test / run"]
+    APPLY --> VERIFY
+    VERIFY --> REPORT([Report up to the captain])
+    REPORT -->|push? switch? next heading?| CAP
+```
+
+The full decision tree — dispatch routing, the worker VM lifecycle with all
+failure paths, every mid-task interaction (live peek, steering, escalation
+with three advisor backends), and the results flow — is in
+[docs/fleet-flow.md](docs/fleet-flow.md).
 
 ## The AI stack on fw0
 
