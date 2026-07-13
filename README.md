@@ -127,30 +127,36 @@ available through tmux/SSH and at `ai.su.is` through Cloudflare Access. See
 
 How a task moves through the system, end to end:
 
+![fleet task flow](docs/img/fleet-flow-1.svg)
+
+<details><summary>Diagram source (Mermaid)</summary>
+
 ```mermaid
 flowchart TD
-    CAP([Captain states a goal]) --> CKPT{"Cockpit:\nhow to do this?"}
+    CAP([Captain states a goal]) --> CKPT{"Cockpit:<br/>how to do this?"}
 
-    CKPT -->|"clarify / decision only the\ncaptain can make (taste, scope,\ndestructive, push, switch)"| ASK[Ask the captain] --> CAP
-    CKPT -->|"small, local, or depends on\nunpushed/private host state"| LOCAL[Do it in the cockpit session]
-    CKPT -->|substantial + self-contained| PLAN["Write task file:\nchoose agent + model + effort\n+ guidance per task"]
+    CKPT -->|"clarify / decision only the<br/>captain can make (taste, scope,<br/>destructive, push, switch)"| ASK[Ask the captain] --> CAP
+    CKPT -->|"small, local, or depends on<br/>unpushed/private host state"| LOCAL[Do it in the cockpit session]
+    CKPT -->|substantial + self-contained| PLAN["Write task file:<br/>choose agent + model + effort<br/>+ guidance per task"]
 
-    PLAN --> DISPATCH[fleet dispatch / submit\nvia scoped sudo → queue]
-    DISPATCH --> DRONE[Drone runs the task\nin a warm microVM]
+    PLAN --> DISPATCH[fleet dispatch / submit<br/>via scoped sudo → queue]
+    DISPATCH --> DRONE[Drone runs the task<br/>in a warm microVM]
 
-    DRONE <-->|"peek / steer /\nescalate / answer"| MID[Mid-task interaction\nwith the cockpit]
-    DRONE --> RESULT["Archive: report, log, patch,\nusage, progress, messages, Q&A"]
+    DRONE <-->|"peek / steer /<br/>escalate / answer"| MID[Mid-task interaction<br/>with the cockpit]
+    DRONE --> RESULT["Archive: report, log, patch,<br/>usage, progress, messages, Q&A"]
 
-    RESULT --> REVIEW{Cockpit reviews\nUNTRUSTED output}
+    RESULT --> REVIEW{Cockpit reviews<br/>UNTRUSTED output}
     REVIEW -->|inadequate / failed| PLAN
-    REVIEW -->|"needs a stronger model\nor different provider"| PLAN
-    REVIEW -->|good| APPLY[Apply patch, verify,\ncommit locally]
+    REVIEW -->|"needs a stronger model<br/>or different provider"| PLAN
+    REVIEW -->|good| APPLY[Apply patch, verify,<br/>commit locally]
 
     LOCAL --> VERIFY["Verify: build / test / run"]
     APPLY --> VERIFY
     VERIFY --> REPORT([Report up to the captain])
     REPORT -->|push? switch? next heading?| CAP
 ```
+
+</details>
 
 The full decision tree — dispatch routing, the worker VM lifecycle with all
 failure paths, every mid-task interaction (live peek, steering, escalation
