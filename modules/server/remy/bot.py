@@ -1028,7 +1028,7 @@ class Bot:
                 topic="Tasks, lists, and the day's plan — talk to me in plain language.",
                 invite=INVITE_USERS,
                 # The first invitee (the captain) gets admin alongside the bot.
-                power_level_content_override={
+                power_level_override={
                     "users": {self.client.user_id: 100,
                               **({INVITE_USERS[0]: 100} if INVITE_USERS else {})}},
             )
