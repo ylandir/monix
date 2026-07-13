@@ -35,6 +35,8 @@ in
   "hosts/fw0/secrets/matrix-registration.env.age".publicKeys = [ fw0 ] ++ admin;
   "hosts/fw0/secrets/matrix-cloudflare-tunnel-token.age".publicKeys = [ fw0 ] ++ admin;
   "hosts/fw0/secrets/matrix-budgetbot.env.age".publicKeys = [ fw0 ] ++ admin;
+  "hosts/fw0/secrets/matrix-remy.env.age".publicKeys = [ fw0 ] ++ admin;
+  "hosts/fw0/secrets/remy-caldav.json.age".publicKeys = [ fw0 ] ++ admin;
   "hosts/fw0/secrets/matrix-alertbot.env.age".publicKeys = [ fw0 ] ++ admin;
   "hosts/fw0/secrets/litellm.env.age".publicKeys = [ fw0 ] ++ admin;
   "hosts/fw0/secrets/open-webui.env.age".publicKeys = [ fw0 ] ++ admin;

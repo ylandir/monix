@@ -138,12 +138,30 @@ in
           else
             null;
 
-        # The budget chat bot (budgetbot.mod.nix): lives in the family
-        # Budget room, parses purchases with local inference into its own
-        # SQLite ledger, answers questions and posts charts. Loopback-only.
-        budgetbot.enable = true;
-        budgetbot.roomId = "!pSYRAx0dRdSkbxwgPr:chat.su.is";
-        budgetbot.credentialsEnvFile = config.secrets.matrix-budgetbot-env.path;
+        # The family chat bot remy (remy.mod.nix): household organizer —
+        # tasks, lists, 07:00/19:00 day-plan posts — in a "Household" room
+        # it creates itself (family invited below), PLUS the absorbed
+        # budgetbot skill set in the existing Budget room against the
+        # unchanged ledger. Account auto-registers from the registration
+        # token; the retired budgetbot account invites remy into the
+        # Budget room via the adopt oneshot. Loopback-only.
+        remy.enable = true;
+        remy.credentialsEnvFile = config.secrets.matrix-remy-env.path;
+        remy.registrationEnvFile = config.secrets.matrix-registration-env.path;
+        remy.budgetRoomId = "!pSYRAx0dRdSkbxwgPr:chat.su.is";
+        remy.budgetbotEnvFile = config.secrets.matrix-budgetbot-env.path;
+        remy.inviteUsers = [
+          "@dylan:chat.su.is"
+          "@gab:chat.su.is"
+        ];
+        # Migadu CalDAV section in the daily posts — bootstrap-gated: create
+        # the JSON secret (see the option's description) as
+        # hosts/fw0/secrets/remy-caldav.json.age, git add, switch.
+        remy.calendar.credentialsFile =
+          if builtins.pathExists ./secrets/remy-caldav.json.age then
+            config.secrets.remy-caldav-json.path
+          else
+            null;
 
         # opencode web UI cockpit seat, exposed through Cloudflare Tunnel.
         # Authentication belongs at the Cloudflare Access layer; do not set
@@ -189,8 +207,22 @@ in
           matrix-registration-env = {
             file = ./secrets/matrix-registration.env.age;
           };
+          # The RETIRED budgetbot account — kept only for remy's
+          # adopt-budget-room oneshot (see remy wiring above).
           matrix-budgetbot-env = {
             file = ./secrets/matrix-budgetbot.env.age;
+          };
+          matrix-remy-env = {
+            file = ./secrets/matrix-remy.env.age;
+          };
+        }
+        // lib.optionalAttrs (builtins.pathExists ./secrets/remy-caldav.json.age) {
+          # Migadu CalDAV accounts for remy's calendar sections (JSON
+          # list; see remy.calendar.credentialsFile). Readable only by
+          # the sync unit's user.
+          remy-caldav-json = {
+            file = ./secrets/remy-caldav.json.age;
+            owner = "remy";
           };
         }
         // lib.optionalAttrs (builtins.pathExists ./secrets/matrix-cloudflare-tunnel-token.age) {
