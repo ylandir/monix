@@ -128,7 +128,13 @@ in
         # modules/server/minecraft.mod.nix). Prism over the stock launcher:
         # trivial to pin a client instance to the server's exact Minecraft
         # version, which the server tracks behind latest (mod availability).
-        environment.systemPackages = singleton pkgs.prismlauncher;
+        #
+        # Element, for the family Matrix on chat.su.is (remy's rooms; see
+        # modules/server/matrix.mod.nix + remy.mod.nix on fw0).
+        environment.systemPackages = [
+          pkgs.prismlauncher
+          pkgs.element-desktop
+        ];
 
         # USER: login shell is NixOS's default (bash) — a plain POSIX $SHELL
         # for tools that shell out (nvim, lf, tmux). The interactive shell is
