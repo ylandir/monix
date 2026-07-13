@@ -217,6 +217,18 @@
                     yield e
 
 
+        def fleet_coverage():
+            # Usage recording began 2026-07-12; older archives have no
+            # usage.json. Say so, or their absence reads as zero spend.
+            tasks = with_usage = 0
+            for pattern in FLEET_GLOBS:
+                for d in glob.glob(os.path.dirname(pattern)):
+                    tasks += 1
+                    if os.path.exists(os.path.join(d, "usage.json")):
+                        with_usage += 1
+            return tasks, with_usage
+
+
         def iter_fleet():
             for pattern in FLEET_GLOBS:
                 for path in glob.glob(pattern):
@@ -309,6 +321,9 @@
             pad = " " * 54  # MODEL(28)+SOURCE(18)+TOK(8)
             print(f"{'ALL':<11}{pad}{grandm:>9.2f}{grand:>9.2f}")
             print("\n* no pricing entry — token counts real, cost not estimated")
+            tasks, with_usage = fleet_coverage()
+            print(f"DRONES: usage recorded for {with_usage} of {tasks} archived tasks"
+                  " (recording began 2026-07-12; earlier tasks left no token data)")
 
             exact = openrouter_exact()
             if exact is not None:
