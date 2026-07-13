@@ -90,7 +90,18 @@ def push_outbox(cal_cfg):
     failed = 0
     client = caldav.DAVClient(url=cal_cfg["url"], username=cal_cfg["username"],
                               password=cal_cfg["password"])
-    calendar = client.principal().calendars()[0]
+    # A principal can expose several collections (Migadu: calendars AND
+    # journals — a VEVENT PUT into journals 403s, live finding). Pick the
+    # first that declares VEVENT support.
+    cals = client.principal().calendars()
+    calendar = cals[0]
+    for c in cals:
+        try:
+            if "VEVENT" in (c.get_supported_components() or []):
+                calendar = c
+                break
+        except Exception:
+            continue
     for r in rows:
         try:
             ev = icalendar.Event()
