@@ -344,7 +344,8 @@ HOME_SCHEMA = {
 
 
 def home_parse(db, sender_name, text):
-    now = today()
+    now_dt = datetime.now(TZ)
+    now = now_dt.date()
     tasks = "\n".join(fmt_task(r) for r in open_tasks(db)) or "(none)"
     deleted = "\n".join(fmt_task(r) for r in db.execute(
         "SELECT * FROM task WHERE deleted=1 ORDER BY id DESC LIMIT 5"))
@@ -356,7 +357,9 @@ A message may contain SEVERAL actions ("by today we need X, and by friday Y"
 = two task_adds; "add milk, and remind us to call the vet thursday" =
 item_add + task_add) — emit one action object per thing, in message order.
 Most messages are exactly one action.
-Today is {now.isoformat()} ({now.strftime('%A')}). Message author: {sender_name}.
+Today is {now.isoformat()} ({now.strftime('%A')}) and the time right now is
+{now_dt.strftime('%H:%M')} (24h) — resolve relative times ("in 5 minutes",
+"in an hour") from that. Message author: {sender_name}.
 Open tasks (id title due):
 {tasks}
 Recently deleted tasks (restorable):
