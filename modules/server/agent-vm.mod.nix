@@ -820,13 +820,23 @@
                 # The drainer owns worker lifecycle; upstream's Restart=always
                 # (VMs as long-running services) would fight its stop/start.
                 Restart = mkForce "no";
-                # Don't wait on a graceful guest poweroff — the guest is
-                # ephemeral (volumes are wiped on next start), so a clean
+                # Don't attempt a graceful guest poweroff at all — the guest
+                # is ephemeral (volumes are wiped on next start), so a clean
                 # shutdown buys nothing and the guest's own poweroff is slow.
-                # Bound the stop so systemd SIGKILLs the VMM almost at once,
-                # reclaiming ~45s/task. (Default was 90s; the guest was taking
-                # the better part of a minute to power off cleanly.)
-                TimeoutStopSec = mkForce 3;
+                # Dropping upstream's microvm-shutdown ExecStop and making
+                # SIGKILL the *intended* kill signal means every stop is
+                # instant AND records as success. (The previous shape —
+                # ExecStop + TimeoutStopSec=3 — killed the VMM just as dead,
+                # but systemd logged every stop as result=timeout, a FAILURE,
+                # so each task recycle and every switch tripped the global
+                # OnFailure Matrix alert: ten spurious alerts per switch.)
+                # [ "" ] renders an empty `ExecStop=` assignment, which is
+                # systemd's "reset the list" idiom — required because the
+                # directive comes from the shared microvm@.service template
+                # and a drop-in can only clear it explicitly.
+                ExecStop = mkForce [ "" ];
+                KillSignal = "SIGKILL";
+                TimeoutStopSec = mkForce 3; # vestigial backstop
                 # EPHEMERALITY — delete the volume images before every start;
                 # the runner's autoCreate recreates them blank (truncate +
                 # mkfs), so each boot is a clean slate.
