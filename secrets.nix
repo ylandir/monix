@@ -28,6 +28,7 @@ in
   "hosts/fw0/secrets/agent-claude-token.age".publicKeys = [ fw0 ] ++ admin;
   "hosts/fw0/secrets/agent-codex-auth.age".publicKeys = [ fw0 ] ++ admin;
   "hosts/fw0/secrets/agent-openrouter-key.age".publicKeys = [ fw0 ] ++ admin;
+  "hosts/fw0/secrets/openrouter-management-key.age".publicKeys = [ fw0 ] ++ admin;
   "hosts/fw0/secrets/opencode-web-env.age".publicKeys = [ fw0 ] ++ admin;
   "hosts/fw0/secrets/opencode-web-cloudflare-tunnel-token.age".publicKeys = [ fw0 ] ++ admin;
   "hosts/fw0/secrets/actual-cloudflare-tunnel-token.age".publicKeys = [ fw0 ] ++ admin;

@@ -285,6 +285,8 @@
                 pkgs.ripgrep
                 pkgs.fd
                 pkgs.jq
+                # usage.json extraction reads opencode's SQLite store
+                pkgs.sqlite
                 pkgs.curl
                 pkgs.gnumake
                 pkgs.gcc
@@ -591,6 +593,79 @@
                         rc=64
                         ;;
                     esac
+                  fi
+                  # Distill the executor's own usage records (Claude/codex:
+                  # JSONL transcripts; opencode: SQLite) into one normalized
+                  # usage.json on the task share, before exit-code signals
+                  # completion. Strictly best-effort: a missing or unparsable
+                  # store must never fail the task. Field names: input/output
+                  # are totals (output includes reasoning); cache_read and
+                  # cache_creation follow Anthropic's split, and codex's
+                  # cached_input maps to cache_read.
+                  if [ -n "$task_user" ]; then
+                    usage=""
+                    case "$agent" in
+                      claude)
+                        usage=$(find "$task_home/.claude/projects" -name '*.jsonl' -print0 2>/dev/null \
+                          | xargs -0r cat \
+                          | jq -cs '
+                              [ .[] | select(.type=="assistant" and .message.usage != null)
+                                | {id: ((.requestId//"") + "/" + (.message.id//"")), u: .message.usage, m: .message.model} ]
+                              | unique_by(.id)
+                              | select(length > 0)
+                              | { executor: "claude",
+                                  model: ((map(.m) | map(select(. != null)) | last) // "unknown"),
+                                  input_tokens: (map(.u.input_tokens//0) | add),
+                                  output_tokens: (map(.u.output_tokens//0) | add),
+                                  cache_read_tokens: (map(.u.cache_read_input_tokens//0) | add),
+                                  cache_creation_tokens: (map(.u.cache_creation_input_tokens//0) | add) }' \
+                          2>/dev/null) || usage=""
+                        ;;
+                      codex)
+                        # total_token_usage is cumulative per session file:
+                        # take each file's final value, then sum the files.
+                        usage=$(
+                          find "$task_home/.codex/sessions" -name '*.jsonl' -print0 2>/dev/null \
+                          | while IFS= read -r -d "" f; do
+                              jq -cs '
+                                { m: ([ .[] | select(.type=="turn_context") | .payload.model ] | last),
+                                  t: ([ .[] | select(.type=="event_msg" and .payload.type=="token_count"
+                                              and .payload.info.total_token_usage != null)
+                                        | .payload.info.total_token_usage ] | last) }
+                                | select(.t != null)' "$f" 2>/dev/null || true
+                            done \
+                          | jq -cs '
+                              select(length > 0)
+                              # OpenAI input_tokens INCLUDES cached; normalize
+                              # to the Anthropic convention (input = uncached)
+                              | { executor: "codex",
+                                  model: ((map(.m) | map(select(. != null)) | last) // "unknown"),
+                                  input_tokens: ((map(.t.input_tokens//0) | add) - (map(.t.cached_input_tokens//0) | add)),
+                                  output_tokens: (map(.t.output_tokens//0) | add),
+                                  cache_read_tokens: (map(.t.cached_input_tokens//0) | add),
+                                  cache_creation_tokens: 0 }' 2>/dev/null) || usage=""
+                        ;;
+                      opencode)
+                        db=$(find "$task_home/.local/share/opencode" -maxdepth 1 -name '*.db' 2>/dev/null | head -n1)
+                        if [ -n "$db" ]; then
+                          usage=$(sqlite3 -readonly -json "$db" 'select data from message' 2>/dev/null \
+                            | jq -c '
+                                [ .[] | .data | fromjson | select(.role=="assistant" and .tokens != null) ]
+                                | select(length > 0)
+                                | { executor: "opencode",
+                                    model: (((map(.providerID) | map(select(. != null)) | last) // "?") + "/"
+                                            + ((map(.modelID) | map(select(. != null)) | last) // "unknown")),
+                                    input_tokens: (map(.tokens.input//0) | add),
+                                    output_tokens: ((map(.tokens.output//0) | add) + (map(.tokens.reasoning//0) | add)),
+                                    cache_read_tokens: (map(.tokens.cache.read//0) | add),
+                                    cache_creation_tokens: (map(.tokens.cache.write//0) | add) }' \
+                            2>/dev/null) || usage=""
+                        fi
+                        ;;
+                    esac
+                    if [ -n "$usage" ]; then
+                      printf '%s\n' "$usage" > ${guestTaskMount}/usage.json
+                    fi
                   fi
                   if [ -n "$task_user" ] && [ -n "$baseline" ] && [ -d /workspace/.git ]; then
                     runuser -u "$task_user" -- env HOME="$task_home" bash -c '

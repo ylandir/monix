@@ -123,6 +123,8 @@
             pkgs.coreutils
             pkgs.findutils
             pkgs.gawk
+            # completion line reads the guest's usage.json
+            pkgs.jq
             pkgs.systemd
           ];
           serviceConfig = {
@@ -518,6 +520,7 @@
               archive_file "$work/agent.log" "$out/agent.log" 52428800
               archive_file "$work/exit-code" "$out/exit-code" 64
               archive_file "$work/changes.patch" "$out/changes.patch" 52428800
+              archive_file "$work/usage.json" "$out/usage.json" 65536
               for f in "$work"/answer-*.md; do
                 [ -e "$f" ] || [ -L "$f" ] || continue
                 answer_name="$(basename "$f")"
@@ -542,7 +545,12 @@
               else
                 report="no report"
               fi
-              log "$(echo "$status" | tr '[:lower:]' '[:upper:]') $id ran $dur, $esc escalation(s), $report"
+              tokens=""
+              if [ -f "$out/usage.json" ]; then
+                tokens=$(jq -r '", \(.input_tokens + .cache_read_tokens + .cache_creation_tokens) in / \(.output_tokens) out tok (\(.model))"' \
+                  "$out/usage.json" 2>/dev/null) || tokens=""
+              fi
+              log "$(echo "$status" | tr '[:lower:]' '[:upper:]') $id ran $dur, $esc escalation(s), $report$tokens"
             done
           '';
         };

@@ -60,6 +60,18 @@ in
         # eval error, not silently-disabled alerting.
         alerts.enable = true;
         alerts.credentialsEnvFile = config.secrets.matrix-alertbot-env.path;
+
+        # Usage/cost ledger CLI (ship-costs.mod.nix). The OpenRouter section
+        # is bootstrap-gated: create a read-only management key at
+        # openrouter.ai Settings → Management Keys, then
+        # `agenix -e hosts/fw0/secrets/openrouter-management-key.age`
+        # (rule already in secrets.nix), git add, switch.
+        shipCosts.enable = true;
+        shipCosts.openrouterKeyFile =
+          if builtins.pathExists ./secrets/openrouter-management-key.age then
+            config.secrets.openrouter-management-key.path
+          else
+            null;
         # Plain-language line atop failure alerts, from the ship-local model
         # (free, loopback; degrades to the raw alert if inference is down).
         alerts.summary.enable = true;
@@ -181,6 +193,14 @@ in
         // {
           # The alert bot's Matrix account + room (see alerts wiring above).
           matrix-alertbot-env.file = ./secrets/matrix-alertbot.env.age;
+        }
+        // lib.optionalAttrs (builtins.pathExists ./secrets/openrouter-management-key.age) {
+          # Read-only OpenRouter management key for ship-costs' exact-spend
+          # section; owned by the primary user, who runs ship-costs.
+          openrouter-management-key = {
+            file = ./secrets/openrouter-management-key.age;
+            owner = config.primaryUser;
+          };
         };
 
         # agenix in this input has no restartUnits option; make the encrypted
