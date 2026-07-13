@@ -182,7 +182,7 @@ def today():
 
 # ---------------------------------------------------------------- LLM
 
-def llm_call(system, text, schema):
+def llm_call(system, text, schema, max_tokens=800):
     body = {
         "model": LLM_MODEL,
         "messages": [{"role": "system", "content": system},
@@ -194,7 +194,7 @@ def llm_call(system, text, schema):
         # live); this also cuts reply latency to ~a second.
         "chat_template_kwargs": {"enable_thinking": False},
         "temperature": 0.1,
-        "max_tokens": 800,
+        "max_tokens": max_tokens,
     }
     resp = requests.post(LLM_URL, json=body, timeout=180)
     resp.raise_for_status()
@@ -275,7 +275,7 @@ def fmt_event(ev):
     return f"{when}  {ev.get('summary', '(untitled)')}{who}"
 
 
-HOME_SCHEMA = {
+HOME_ACTION = {
     "type": "object",
     "properties": {
         "intent": {"type": "string",
@@ -303,6 +303,16 @@ HOME_SCHEMA = {
                  "scope", "list_name", "items", "item_id", "kind", "reply"],
 }
 
+# One message can carry several actions ("by EOD we need X, and by friday
+# Y" = two task_adds) — live finding from the captain's very first message.
+HOME_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "actions": {"type": "array", "items": HOME_ACTION, "minItems": 1},
+    },
+    "required": ["actions"],
+}
+
 
 def home_parse(db, sender_name, text):
     now = today()
@@ -311,7 +321,11 @@ def home_parse(db, sender_name, text):
         "SELECT * FROM task WHERE deleted=1 ORDER BY id DESC LIMIT 5"))
     items = "\n".join(f"#{r['id']} [{r['list_name']}] {r['name']}"
                       for r in open_items(db)) or "(none)"
-    system = f"""You classify one message from a family household-organizer chat into a JSON action.
+    system = f"""You classify one message from a family household-organizer chat into a JSON list of actions.
+A message may contain SEVERAL actions ("by today we need X, and by friday Y"
+= two task_adds; "add milk, and remind us to call the vet thursday" =
+item_add + task_add) — emit one action object per thing, in message order.
+Most messages are exactly one action.
 Today is {now.isoformat()} ({now.strftime('%A')}). Message author: {sender_name}.
 Open tasks (id title due):
 {tasks}
@@ -346,10 +360,13 @@ Rules:
 - Anything else (greetings, chatter between the humans, unclear) => intent
   other with reply as a one-line response ONLY if the message was addressed
   to the bot, else reply "".
-Every JSON field is required: set unused string fields to "", unused numbers
-to 0, unused arrays to []. For task_add, title MUST be filled in.
-Output only the JSON object."""
-    return llm_call(system, text, HOME_SCHEMA)
+Every JSON field is required in every action: set unused string fields to "",
+unused numbers to 0, unused arrays to []. For task_add, title MUST be filled
+in. Chatter not addressed to the bot = one "other" action with reply "".
+Output only the JSON object: {{"actions": [...]}}."""
+    # Generous token budget: several actions × all-required fields (local
+    # tokens are free; a starved response is not).
+    return llm_call(system, text, HOME_SCHEMA, max_tokens=2000).get("actions", [])
 
 
 def valid_date(s):
@@ -890,44 +907,51 @@ class Bot:
 
     async def handle_home(self, room_id, sender, event, text):
         try:
-            act = await asyncio.to_thread(home_parse, self.hdb, sender, text)
+            acts = await asyncio.to_thread(home_parse, self.hdb, sender, text)
         except Exception:
             log.exception("parse failed")
             await self.send(room_id, "(I choked parsing that — try again?)")
             return
-        log.info("home %s: %r -> %s", sender, text, act.get("intent"))
-        intent = act.get("intent")
-        mutated = intent in ("task_add", "task_done", "task_edit", "task_snooze",
-                             "task_delete", "task_restore", "item_add",
-                             "item_done", "item_remove", "list_clear")
-        handlers = {
-            "task_add": lambda: do_task_add(self.hdb, act, sender),
-            "task_done": lambda: do_task_done(self.hdb, act, sender),
-            "task_edit": lambda: do_task_edit(self.hdb, act),
-            "task_snooze": lambda: do_task_snooze(self.hdb, act),
-            "task_delete": lambda: do_task_delete(self.hdb, act),
-            "task_restore": lambda: do_task_restore(self.hdb, act),
-            "tasks_show": lambda: do_tasks_show(self.hdb, act),
-            "item_add": lambda: do_item_add(self.hdb, act, sender),
-            "item_done": lambda: do_item_done(self.hdb, act),
-            "item_remove": lambda: do_item_remove(self.hdb, act),
-            "list_show": lambda: do_list_show(self.hdb, act),
-            "list_clear": lambda: do_list_clear(self.hdb, act),
-        }
-        if intent in handlers:
-            await self.send(room_id, handlers[intent]())
-        elif intent == "post_now":
-            kind = act.get("kind") or "morning"
-            make = {"week": lambda db: week_section(db, today()),
-                    "evening": evening_post}.get(kind, morning_post)
-            await self.send(room_id, make(self.hdb))
-        elif intent == "help":
-            await self.send(room_id, HOME_HELP)
-        elif intent == "other" and act.get("reply"):
-            await self.send(room_id, act["reply"][:400])
+        log.info("home %s: %r -> %s", sender, text,
+                 [a.get("intent") for a in acts])
+        MUTATORS = ("task_add", "task_done", "task_edit", "task_snooze",
+                    "task_delete", "task_restore", "item_add",
+                    "item_done", "item_remove", "list_clear")
+        replies, mutated = [], []
+        for act in acts[:8]:  # runaway-parse backstop
+            intent = act.get("intent")
+            handlers = {
+                "task_add": lambda a=act: do_task_add(self.hdb, a, sender),
+                "task_done": lambda a=act: do_task_done(self.hdb, a, sender),
+                "task_edit": lambda a=act: do_task_edit(self.hdb, a),
+                "task_snooze": lambda a=act: do_task_snooze(self.hdb, a),
+                "task_delete": lambda a=act: do_task_delete(self.hdb, a),
+                "task_restore": lambda a=act: do_task_restore(self.hdb, a),
+                "tasks_show": lambda a=act: do_tasks_show(self.hdb, a),
+                "item_add": lambda a=act: do_item_add(self.hdb, a, sender),
+                "item_done": lambda a=act: do_item_done(self.hdb, a),
+                "item_remove": lambda a=act: do_item_remove(self.hdb, a),
+                "list_show": lambda a=act: do_list_show(self.hdb, a),
+                "list_clear": lambda a=act: do_list_clear(self.hdb, a),
+            }
+            if intent in handlers:
+                replies.append(handlers[intent]())
+            elif intent == "post_now":
+                kind = act.get("kind") or "morning"
+                make = {"week": lambda db: week_section(db, today()),
+                        "evening": evening_post}.get(kind, morning_post)
+                replies.append(make(self.hdb))
+            elif intent == "help":
+                replies.append(HOME_HELP)
+            elif intent == "other" and act.get("reply"):
+                replies.append(act["reply"][:400])
+            if intent in MUTATORS:
+                mutated.append(intent)
+        if replies:
+            await self.send(room_id, "\n".join(replies))
         if mutated:
             await asyncio.to_thread(git_snapshot, self.hdb, DB_PATH,
-                                    f"{intent} by {sender}: {text[:60]}")
+                                    f"{'+'.join(mutated)} by {sender}: {text[:60]}")
 
     async def handle_budget(self, room_id, sender, event, text):
         try:
