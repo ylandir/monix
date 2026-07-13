@@ -105,7 +105,10 @@
 
 
         def parse_ts(s):
-            return dt.datetime.fromisoformat(s.replace("Z", "+00:00"))
+            ts = dt.datetime.fromisoformat(s.replace("Z", "+00:00"))
+            if ts.tzinfo is None:  # naive ts would poison window comparisons
+                raise ValueError(s)
+            return ts
 
 
         def iter_claude():
@@ -128,15 +131,18 @@
                         if not u:
                             continue
                         key = (e.get("requestId"), msg.get("id"))
-                        if key in seen:
-                            continue
-                        seen.add(key)
+                        if key != (None, None):  # unkeyed entries can't dedup
+                            if key in seen:
+                                continue
+                            seen.add(key)
                         cc = u.get("cache_creation") or {}
                         cw5 = cc.get("ephemeral_5m_input_tokens")
                         cw1 = cc.get("ephemeral_1h_input_tokens", 0)
-                        if cw5 is None:  # older entries: only the total, price as 5m
+                        if cw5 is None and not cc:
+                            # older entries: only the total, price as 5m
                             cw5 = u.get("cache_creation_input_tokens", 0)
                             cw1 = 0
+                        cw5 = cw5 or 0
                         try:
                             ts = parse_ts(e["timestamp"])
                         except (KeyError, ValueError):
@@ -147,11 +153,17 @@
 
 
         def iter_codex():
-            # total_token_usage is cumulative per session file: use each
-            # file's final value. Also surfaces the newest rate-limit gauge.
+            # total_token_usage is cumulative per session file: emit the
+            # DELTA at each token_count event, timestamped and attributed to
+            # the model in force, so sessions spanning a window boundary are
+            # split correctly. A decrease means a fresh counter (new session
+            # in-file); treat the new value as its own delta. Also surfaces
+            # the newest rate-limit gauge.
             gauge = {"ts": None}
+            fields = ("input_tokens", "cached_input_tokens", "output_tokens")
             for path in glob.glob(os.path.join(CODEX_DIR, "**", "*.jsonl"), recursive=True):
-                model, total, ts = "unknown", None, None
+                model = "unknown"
+                prev = dict.fromkeys(fields, 0)
                 try:
                     fh = open(path, encoding="utf-8", errors="replace")
                 except OSError:
@@ -167,20 +179,25 @@
                             model = p["model"]
                         elif e.get("type") == "event_msg" and p.get("type") == "token_count":
                             info = p.get("info") or {}
-                            if info.get("total_token_usage"):
-                                total = info["total_token_usage"]
-                                try:
-                                    ts = parse_ts(e["timestamp"])
-                                except (KeyError, ValueError):
-                                    pass
+                            total = info.get("total_token_usage")
+                            if not total:
+                                continue
+                            try:
+                                ts = parse_ts(e["timestamp"])
+                            except (KeyError, ValueError):
+                                continue
+                            cur = {k: total.get(k, 0) for k in fields}
+                            if any(cur[k] < prev[k] for k in fields):
+                                prev = dict.fromkeys(fields, 0)
+                            d = {k: cur[k] - prev[k] for k in fields}
+                            prev = cur
                             rl = p.get("rate_limits")
-                            if rl and ts and (gauge["ts"] is None or ts > gauge["ts"]):
+                            if rl and (gauge["ts"] is None or ts > gauge["ts"]):
                                 gauge.update({"ts": ts, "rl": rl})
-                if total and ts:
-                    cached = total.get("cached_input_tokens", 0)
-                    yield ev(ts, model, "cockpit codex",
-                             total.get("input_tokens", 0) - cached,
-                             total.get("output_tokens", 0), cached)
+                            if any(d.values()):
+                                yield ev(ts, model, "cockpit codex",
+                                         d["input_tokens"] - d["cached_input_tokens"],
+                                         d["output_tokens"], d["cached_input_tokens"])
             iter_codex.gauge = gauge
 
 
@@ -244,15 +261,16 @@
 
 
         def cost_usd(model, t):
+            # A recorded cost (opencode metered rows) and a pricing-table
+            # estimate are alternatives, never additive.
             r = rates(model)
             if pool_of(model) == "local":
                 return 0.0
             if r is None:
-                return t.get("cost", 0) or 0.0  # opencode metered rows carry real cost
+                return t.get("cost", 0) or 0.0
             i, o, cr, cw5, cw1 = r
-            usd = (t["in"] * i + t["out"] * o + t["cr"] * cr
-                   + t["cw5"] * cw5 + t["cw1"] * cw1) / 1e6
-            return usd + (t.get("cost", 0) or 0)
+            return (t["in"] * i + t["out"] * o + t["cr"] * cr
+                    + t["cw5"] * cw5 + t["cw1"] * cw1) / 1e6
 
 
         def openrouter_exact():
@@ -276,18 +294,21 @@
         def main():
             windows = {"mtd": {}, "d30": {}}
             for it in (iter_claude, iter_codex, iter_opencode, iter_fleet):
-                for ts, model, source, t in it():
-                    if ts < D30 and ts < MTD:
-                        continue
-                    for name, start in (("mtd", MTD), ("d30", D30)):
-                        if ts < start:
+                try:
+                    for ts, model, source, t in it():
+                        if ts < D30 and ts < MTD:
                             continue
-                        key = (pool_of(model), model, source)
-                        agg = windows[name].setdefault(
-                            key, {"in": 0, "out": 0, "cr": 0, "cw5": 0, "cw1": 0, "cost": 0})
-                        for k in ("in", "out", "cr", "cw5", "cw1"):
-                            agg[k] += t[k]
-                        agg["cost"] += t.get("cost", 0) or 0
+                        for name, start in (("mtd", MTD), ("d30", D30)):
+                            if ts < start:
+                                continue
+                            key = (pool_of(model), model, source)
+                            agg = windows[name].setdefault(
+                                key, {"in": 0, "out": 0, "cr": 0, "cw5": 0, "cw1": 0, "cost": 0})
+                            for k in ("in", "out", "cr", "cw5", "cw1"):
+                                agg[k] += t[k]
+                            agg["cost"] += t.get("cost", 0) or 0
+                except Exception as exc:  # one broken store must not kill the ledger
+                    print(f"WARNING: {it.__name__} aborted: {exc}", file=sys.stderr)
 
             print("SHIP COSTS — API-equivalent spend (subs bill flat; this is what the")
             print("same usage would cost at API rates). Ship-side usage only; app chats")
@@ -299,15 +320,17 @@
             print(header)
             print("-" * len(header))
             totals = {"mtd": {}, "d30": {}}
-            for key in sorted(d30, key=lambda k: (order.get(k[0], 9), k[1], k[2])):
+            all_keys = set(d30) | set(windows["mtd"])  # MTD-only keys can exist on day 31
+            for key in sorted(all_keys, key=lambda k: (order.get(k[0], 9), k[1], k[2])):
                 pool, model, source = key
-                t30 = d30[key]
+                t30 = d30.get(key)
                 tmtd = windows["mtd"].get(key)
-                usd30 = cost_usd(model, t30)
+                usd30 = cost_usd(model, t30) if t30 else 0.0
                 usdmtd = cost_usd(model, tmtd) if tmtd else 0.0
                 totals["d30"][pool] = totals["d30"].get(pool, 0) + usd30
                 totals["mtd"][pool] = totals["mtd"].get(pool, 0) + usdmtd
-                mtok = (t30["in"] + t30["out"] + t30["cr"] + t30["cw5"] + t30["cw1"]) / 1e6
+                tsum = t30 or tmtd
+                mtok = (tsum["in"] + tsum["out"] + tsum["cr"] + tsum["cw5"] + tsum["cw1"]) / 1e6
                 star = "" if rates(model) or pool == "local" else " *"
                 print(f"{pool:<11}{model[:27]:<28}{source:<18}{mtok:>8.1f}"
                       f"{usdmtd:>9.2f}{usd30:>9.2f}{star}")
@@ -330,17 +353,18 @@
                 print("\nOPENROUTER (exact, via API):")
                 by_model = {}
                 for row in exact:
-                    d = row.get("date", "")
                     try:
-                        rts = dt.datetime.fromisoformat(d).replace(tzinfo=dt.timezone.utc)
+                        rts = dt.datetime.fromisoformat(row.get("date", ""))
                     except ValueError:
                         continue
+                    if rts.tzinfo is None:
+                        rts = rts.replace(tzinfo=dt.timezone.utc)
                     if rts < D30:
                         continue
-                    by_model.setdefault(row.get("model", "?"), [0, 0])
-                    by_model[row["model"]][0] += row.get("usage", 0)
+                    entry = by_model.setdefault(row.get("model", "?"), [0, 0])
+                    entry[0] += row.get("usage", 0)
                     if rts >= MTD:
-                        by_model[row["model"]][1] += row.get("usage", 0)
+                        entry[1] += row.get("usage", 0)
                 for model, (u30, umtd) in sorted(by_model.items()):
                     print(f"  {model:<40}{umtd:>9.2f}{u30:>9.2f}")
             elif OPENROUTER_KEY_FILE:
@@ -377,13 +401,17 @@
         enable = mkEnableOption "the ship-costs usage/cost ledger CLI";
 
         openrouterKeyFile = mkOption {
-          type = types.nullOr types.path;
+          # types.str, NOT types.path: interpolating a path literal would
+          # copy the key into the world-readable Nix store. Only runtime
+          # paths (/run/agenix/...) belong here.
+          type = types.nullOr types.str;
           default = null;
           description = ''
-            File containing an OpenRouter key (a management key from
-            Settings → Management Keys is preferred; read-only, free) for
-            exact per-model spend via the activity API. Must be readable
-            by whoever runs ship-costs. null = skip the API section.
+            Runtime path (e.g. /run/agenix/...) to a file containing an
+            OpenRouter key (a management key from Settings → Management
+            Keys is preferred; read-only, free) for exact per-model spend
+            via the activity API. Must be readable by whoever runs
+            ship-costs; never a Nix path literal. null = skip the section.
           '';
         };
       };

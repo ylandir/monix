@@ -46,29 +46,41 @@
         text = ''
           hs=${lib.escapeShellArg cfg.homeserverUrl}
           room=$(jq -rn --arg r "$ALERT_ROOM_ID" '$r|@uri')
+          # Every call is JSON and must say so (tuwunel currently tolerates
+          # the curl default, a stricter server rejects it), and every call
+          # gets a hard timeout so a stalled homeserver can't wedge the
+          # oneshot forever.
+          mcurl() {
+            curl -sf --connect-timeout 5 --max-time 30 \
+              -H "Content-Type: application/json" "$@"
+          }
 
-          tok=$(curl -sf -X POST "$hs/_matrix/client/v3/login" \
+          tok=$(mcurl -X POST "$hs/_matrix/client/v3/login" \
             -d "$(jq -n --arg u "$MATRIX_USER" --arg p "$MATRIX_PASSWORD" \
               '{type:"m.login.password",identifier:{type:"m.id.user",user:$u},password:$p}')" \
-            | jq -r .access_token)
+            | jq -er .access_token)
 
           # One-time setup, stamped: accept the room invite and strip the
-          # display-name suffix tuwunel appended at registration.
+          # display-name suffix tuwunel appended at registration. Both
+          # non-fatal: joining is idempotent but concurrent failure alerts
+          # can race here, and the alert send below must still happen.
           stamp=/var/lib/alerts/initialized
           if [ ! -e "$stamp" ]; then
-            curl -sf -X POST -H "Authorization: Bearer $tok" \
-              "$hs/_matrix/client/v3/join/$room" -d '{}' > /dev/null
-            curl -sf -X PUT -H "Authorization: Bearer $tok" \
+            mcurl -X POST -H "Authorization: Bearer $tok" \
+              "$hs/_matrix/client/v3/join/$room" -d '{}' > /dev/null || true
+            mcurl -X PUT -H "Authorization: Bearer $tok" \
               "$hs/_matrix/client/v3/profile/$(jq -rn --arg u "$MATRIX_USER" '$u|@uri')/displayname" \
               -d '{"displayname":"alertbot"}' > /dev/null || true
             touch "$stamp"
           fi
 
-          curl -sf -X PUT -H "Authorization: Bearer $tok" \
-            "$hs/_matrix/client/v3/rooms/$room/send/m.room.message/$(date +%s%N)" \
+          # txn id: nanoseconds + PID, so two concurrent failure alerts in
+          # the same instant can't be deduplicated into one by the server.
+          mcurl -X PUT -H "Authorization: Bearer $tok" \
+            "$hs/_matrix/client/v3/rooms/$room/send/m.room.message/$(date +%s%N)-$$" \
             -d "$(jq -n --arg b "$1" '{msgtype:"m.text",body:$b}')" > /dev/null
 
-          curl -sf -X POST -H "Authorization: Bearer $tok" \
+          mcurl -X POST -H "Authorization: Bearer $tok" \
             "$hs/_matrix/client/v3/logout" -d '{}' > /dev/null || true
         '';
       };
