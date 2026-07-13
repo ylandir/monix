@@ -1,11 +1,18 @@
-"""remy-calendar-sync — pull the family's CalDAV calendars to a file.
+"""remy-calendar-sync — the bot's two-way bridge to the family CalDAV.
 
-Runs as a systemd timer, separate from the chat bot on purpose: this is
+Runs as a systemd timer (plus a path unit that fires it the moment the
+bot queues an event), separate from the chat bot on purpose: this is
 the ONLY remy process with network egress, and it holds the only copy
-of the calendar credentials. It fetches upcoming events (recurrences
-expanded) from each configured CalDAV account (Migadu: cdav.migadu.com)
-and atomically writes a normalized calendar.json that the loopback-fenced
-bot merely reads. A broken fetch leaves the previous file in place.
+of the calendar credentials. Each run:
+
+  1. PUSHES the bot's cal_outbox (events created from chat) to the FIRST
+     configured calendar, marking rows pushed; a failed push stays queued
+     and fails the unit (so it alerts) after the fetch still ran.
+  2. FETCHES upcoming events (recurrences expanded) from each configured
+     CalDAV account (Migadu: cdav.migadu.com) and atomically writes a
+     normalized calendar.json that the loopback-fenced bot merely reads —
+     so a just-pushed event is visible to the bot immediately. A broken
+     fetch leaves the previous file in place.
 
 Config: REMY_CALDAV_CONFIG points at a JSON file (an agenix secret):
   [{"name": "dylan", "url": "https://cdav.migadu.com/",
@@ -15,18 +22,23 @@ Config: REMY_CALDAV_CONFIG points at a JSON file (an agenix secret):
 import json
 import logging
 import os
+import sqlite3
 import sys
 import tempfile
 import time
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import caldav
+import icalendar
 
 log = logging.getLogger("calsync")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
 CONFIG = os.environ["REMY_CALDAV_CONFIG"]
 OUT = os.environ.get("BOT_CALENDAR_JSON", "/var/lib/remy/calendar.json")
+DB_PATH = os.environ.get("BOT_DB", "/var/lib/remy/home.db")
+TZ = ZoneInfo(os.environ.get("BOT_TZ", "America/New_York"))
 DAYS_AHEAD = int(os.environ.get("REMY_CAL_DAYS", "30"))
 
 
@@ -60,9 +72,68 @@ def fetch(cal_cfg, start, end):
     return events
 
 
+def push_outbox(cal_cfg):
+    """Create the bot's queued events on the CalDAV server.
+
+    Returns the number of rows that FAILED (left queued for the next run,
+    error noted on the row).
+    """
+    if not os.path.exists(DB_PATH):
+        return 0
+    db = sqlite3.connect(DB_PATH)
+    db.row_factory = sqlite3.Row
+    rows = db.execute(
+        "SELECT * FROM cal_outbox WHERE pushed_ts IS NULL ORDER BY id").fetchall()
+    if not rows:
+        db.close()
+        return 0
+    failed = 0
+    client = caldav.DAVClient(url=cal_cfg["url"], username=cal_cfg["username"],
+                              password=cal_cfg["password"])
+    calendar = client.principal().calendars()[0]
+    for r in rows:
+        try:
+            ev = icalendar.Event()
+            ev.add("uid", f"remy-{r['id']}-{r['created_ts']}@remy.local")
+            ev.add("summary", r["summary"])
+            if len(r["start"]) > 10:
+                start = datetime.strptime(r["start"], "%Y-%m-%d %H:%M").replace(tzinfo=TZ)
+                ev.add("dtstart", start)
+                ev.add("dtend", start + timedelta(hours=1))
+            else:
+                day = date.fromisoformat(r["start"])
+                ev.add("dtstart", day)
+                ev.add("dtend", day + timedelta(days=1))
+            ev.add("dtstamp", datetime.now(TZ))
+            cal = icalendar.Calendar()
+            cal.add("prodid", "-//remy//household bot//EN")
+            cal.add("version", "2.0")
+            cal.add_component(ev)
+            calendar.save_event(cal.to_ical().decode())
+            db.execute("UPDATE cal_outbox SET pushed_ts=?, error='' WHERE id=?",
+                       (int(time.time()), r["id"]))
+            db.commit()
+            log.info("pushed '%s' (%s)", r["summary"], r["start"])
+        except Exception as e:
+            failed += 1
+            db.execute("UPDATE cal_outbox SET error=? WHERE id=?",
+                       (str(e)[:200], r["id"]))
+            db.commit()
+            log.exception("push failed for '%s'", r["summary"])
+    db.close()
+    return failed
+
+
 def main():
     with open(CONFIG) as f:
         calendars = json.load(f)
+    push_failures = 0
+    try:
+        push_failures = push_outbox(calendars[0])
+    except Exception:
+        # Connection-level failure: everything stays queued for next run.
+        push_failures = 1
+        log.exception("outbox push failed")
     start = date.today() - timedelta(days=1)
     end = date.today() + timedelta(days=DAYS_AHEAD)
     events, failures = [], 0
@@ -86,6 +157,10 @@ def main():
     os.replace(tmp, OUT)
     os.chmod(OUT, 0o644)
     log.info("wrote %d events to %s", len(events), OUT)
+    if push_failures:
+        # Fetch already ran and calendar.json is fresh; still fail the unit
+        # so the stuck outbox rows alert instead of rotting silently.
+        sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -375,6 +375,8 @@
           environment = {
             REMY_CALDAV_CONFIG = cfg.calendar.credentialsFile;
             BOT_CALENDAR_JSON = "/var/lib/remy/calendar.json";
+            BOT_DB = "/var/lib/remy/home.db";
+            BOT_TZ = config.time.timeZone;
             REMY_CAL_DAYS = toString cfg.calendar.daysAhead;
           };
           serviceConfig = sandbox // {
@@ -407,6 +409,14 @@
             OnBootSec = "5min";
             OnUnitActiveSec = "30min";
           };
+        };
+
+        # The bot touches outbox.flag when chat queues a calendar event;
+        # this fires the sync (= push + re-fetch) within seconds instead of
+        # waiting out the 30-minute timer.
+        systemd.paths.remy-calendar-sync = mkIf (cfg.calendar.credentialsFile != null) {
+          wantedBy = [ "multi-user.target" ];
+          pathConfig.PathChanged = "/var/lib/remy/outbox.flag";
         };
       };
     };

@@ -103,6 +103,15 @@ def home_db():
             done_ts INTEGER,                -- NULL = still needed
             deleted INTEGER NOT NULL DEFAULT 0
         );
+        CREATE TABLE IF NOT EXISTS cal_outbox(
+            id INTEGER PRIMARY KEY,
+            summary TEXT NOT NULL,
+            start TEXT NOT NULL,            -- 'yyyy-mm-dd HH:MM' or all-day 'yyyy-mm-dd'
+            created_by TEXT NOT NULL,
+            created_ts INTEGER NOT NULL,
+            pushed_ts INTEGER,              -- NULL = awaiting the sync unit
+            error TEXT NOT NULL DEFAULT ''
+        );
         CREATE TABLE IF NOT EXISTS reminder(
             id INTEGER PRIMARY KEY,
             text TEXT NOT NULL,
@@ -305,6 +314,7 @@ HOME_ACTION = {
                    "enum": ["task_add", "task_done", "task_edit", "task_snooze",
                             "task_delete", "task_restore", "tasks_show",
                             "remind_add", "remind_cancel", "remind_show",
+                            "cal_add",
                             "item_add", "item_done", "item_remove", "list_show",
                             "list_clear", "post_now", "help", "other"]},
         "title": {"type": "string"},
@@ -394,6 +404,11 @@ Rules:
   A DAY deadline with no clock time ("by friday") stays a task_add, NOT a
   reminder. Cancelling one => remind_cancel with rem_id from the pending
   list above; "what reminders are set" => remind_show.
+- An APPOINTMENT/EVENT to go on the family calendar ("put the dentist on
+  the calendar tuesday at 3", "add gab's recital to the calendar friday",
+  "we have dinner with the smiths saturday 7pm") => cal_add with title and
+  at ('yyyy-mm-dd HH:MM', or just 'yyyy-mm-dd' for an all-day event).
+  Calendar = something happening; task = something to do; reminder = a ping.
 - Adding to a list ("add milk and eggs to shopping", "put batteries on the
   hardware list") => item_add with list_name (short, lowercase; default
   "shopping" for groceries-like things) and items = each thing separately.
@@ -471,6 +486,29 @@ def do_remind_add(db, act, sender):
     db.commit()
     r = db.execute("SELECT * FROM reminder ORDER BY id DESC LIMIT 1").fetchone()
     return f"⏰ will do — {fmt_reminder(r)}"
+
+
+OUTBOX_FLAG = os.path.join(os.path.dirname(DB_PATH), "outbox.flag")
+
+
+def do_cal_add(db, act, sender):
+    title = (act.get("title") or "").strip()[:120]
+    at = valid_at(act.get("at")) or valid_date((act.get("at") or "").strip()[:10])
+    if not title or not at:
+        return "Put what on the calendar, when? ('dentist on the calendar tuesday at 3')"
+    db.execute("INSERT INTO cal_outbox(summary,start,created_by,created_ts)"
+               " VALUES(?,?,?,?)", (title, at, sender, int(time.time())))
+    db.commit()
+    # Poke the credentialed sync unit (a systemd path unit watches this
+    # file); the event is on Migadu within seconds.
+    try:
+        with open(OUTBOX_FLAG, "w") as f:
+            f.write(str(time.time()))
+    except OSError:
+        log.exception("outbox flag write failed")  # 30-min timer still delivers
+    d = date.fromisoformat(at[:10])
+    when = d.strftime("%a %b %-d") + (f" {at[11:]}" if len(at) > 10 else " (all day)")
+    return f"🗓 {title} — {when}, putting it on the calendar now"
 
 
 def do_remind_cancel(db, act):
@@ -745,6 +783,7 @@ HOME_HELP = """I keep the family's tasks, lists, and day plans. Examples:
 • we need to renew the car registration by friday
 • I need dylan to call the plumber by thursday / what's on gab's plate?
 • remind me thursday at 9 to defrost the chicken / what reminders are set?
+• put the dentist on the calendar tuesday at 3 — goes straight to Migadu
 • thursday we need to take the cat to the vet / done 3 / push #3 to monday
 • add milk and eggs to shopping / got the milk / show shopping list
 • what's on today? / this week? / show tasks
@@ -1048,7 +1087,7 @@ class Bot:
         log.info("home %s: %r -> %s", sender, text,
                  [a.get("intent") for a in acts])
         MUTATORS = ("task_add", "task_done", "task_edit", "task_snooze",
-                    "task_delete", "task_restore", "remind_add",
+                    "task_delete", "task_restore", "cal_add", "remind_add",
                     "remind_cancel", "item_add",
                     "item_done", "item_remove", "list_clear")
         replies, mutated = [], []
@@ -1062,6 +1101,7 @@ class Bot:
                 "task_delete": lambda a=act: do_task_delete(self.hdb, a),
                 "task_restore": lambda a=act: do_task_restore(self.hdb, a),
                 "tasks_show": lambda a=act: do_tasks_show(self.hdb, a),
+                "cal_add": lambda a=act: do_cal_add(self.hdb, a, sender),
                 "remind_add": lambda a=act: do_remind_add(self.hdb, a, sender),
                 "remind_cancel": lambda a=act: do_remind_cancel(self.hdb, a),
                 "remind_show": lambda: do_remind_show(self.hdb),
