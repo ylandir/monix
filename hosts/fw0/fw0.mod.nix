@@ -61,6 +61,14 @@ in
         alerts.enable = true;
         alerts.credentialsEnvFile = config.secrets.matrix-alertbot-env.path;
 
+        # Fleet ops feed (fleet-log-stream.mod.nix): the agent-fleet audit
+        # log streamed line-for-line into a Fleet Ops room, posted by the
+        # same alertbot account. The bot creates the room on first start
+        # and invites the captain.
+        fleetLogStream.enable = true;
+        fleetLogStream.credentialsEnvFile = config.secrets.matrix-alertbot-env.path;
+        fleetLogStream.inviteUsers = [ "@dylan:chat.su.is" ];
+
         # Usage/cost ledger CLI (ship-costs.mod.nix). The OpenRouter section
         # is bootstrap-gated: create a read-only management key at
         # openrouter.ai Settings → Management Keys, then
