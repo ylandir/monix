@@ -830,7 +830,7 @@ def evening_post(db):
             lines.append(f"  ✔ {checked} list item{'s' if checked > 1 else ''} checked off")
     missed = [r for r in open_tasks(db) if r["due"] and r["due"] <= now.isoformat()]
     if missed:
-        lines.append("Didn't get done (carrying over):")
+        lines.append("Last call:")
         lines += [f"  • #{r['id']} {r['title']}{fmt_who(r)}{fmt_due(r['due'])}" for r in missed]
     tomorrow = now + timedelta(days=1)
     due_tmrw = [r for r in open_tasks(db) if r["due"] == tomorrow.isoformat()]
