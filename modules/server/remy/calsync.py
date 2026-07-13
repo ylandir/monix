@@ -82,26 +82,47 @@ def push_outbox(cal_cfg):
         return 0
     db = sqlite3.connect(DB_PATH)
     db.row_factory = sqlite3.Row
-    rows = db.execute(
-        "SELECT * FROM cal_outbox WHERE pushed_ts IS NULL ORDER BY id").fetchall()
-    if not rows:
-        db.close()
-        return 0
     failed = 0
     client = caldav.DAVClient(url=cal_cfg["url"], username=cal_cfg["username"],
                               password=cal_cfg["password"])
     # A principal can expose several collections (Migadu: calendars AND
-    # journals — a VEVENT PUT into journals 403s, live finding). Pick the
-    # first that declares VEVENT support.
-    cals = client.principal().calendars()
-    calendar = cals[0]
-    for c in cals:
+    # journals — a VEVENT PUT into journals 403s; and more than one
+    # event-capable collection, where "first with VEVENT" landed events in
+    # a side collection the calendar UI never shows — both live findings).
+    # Push to the collection that holds the family's actual events: the
+    # VEVENT-capable one with the most events already in it.
+    candidates = []
+    for c in client.principal().calendars():
         try:
-            if "VEVENT" in (c.get_supported_components() or []):
-                calendar = c
-                break
+            if "VEVENT" not in (c.get_supported_components() or []):
+                continue
+            candidates.append((c, c.events()))
         except Exception:
             continue
+    if not candidates:
+        raise RuntimeError("no VEVENT-capable collection found")
+    for c, evs in candidates:
+        log.info("candidate collection %s: %d events", c.url, len(evs))
+    calendar = max(candidates, key=lambda t: len(t[1]))[0]
+    log.info("pushing to %s", calendar.url)
+    # Sweep our strays out of the losing collections (the pre-fix pushes)
+    # and requeue them so this same run re-creates them in the right one.
+    for c, evs in candidates:
+        if c.url == calendar.url:
+            continue
+        for ev in evs:
+            try:
+                uid = str(ev.icalendar_component.get("uid", ""))
+                if uid.startswith("remy-"):
+                    ev.delete()
+                    db.execute("UPDATE cal_outbox SET pushed_ts=NULL WHERE id=?",
+                               (int(uid.split("-")[1]),))
+                    db.commit()
+                    log.info("moved stray remy event out of %s", c.url)
+            except Exception:
+                log.exception("stray cleanup failed in %s", c.url)
+    rows = db.execute(
+        "SELECT * FROM cal_outbox WHERE pushed_ts IS NULL ORDER BY id").fetchall()
     for r in rows:
         try:
             ev = icalendar.Event()
