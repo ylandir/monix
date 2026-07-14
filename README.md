@@ -1,247 +1,97 @@
-# nix-config
+# THE KESTREL — hull fw0
 
-A single-repo, modular NixOS configuration built on the **Dendritic Pattern**
-(flake-parts with `*.mod.nix` auto-discovery). It is Linux-only and designed so
-that adding a host is a few lines.
+*Unmanned, semi-autonomous research and development ship.*
 
-Hosts: **fw3** (Framework 13 AMD 7040 running a Hyprland desktop shelled by
-DankMaterialShell) and **fw0** (Framework Desktop, Ryzen AI Max+ 395, 128GB —
-headless always-on AI server: the agent-fleet microVM host, the user's
-persistent cockpit session, Tailscale, and a LiteLLM/Open WebUI gateway that
-is declared but disabled until real secrets exist).
+---
 
-## How it fits together
+Welcome aboard the Kestrel — an unmanned, semi-autonomous research and development
+ship. No human walks her decks: the crew that lives aboard is made of minds, and the
+Captain flies the ship remotely, from his outposts. He sets the heading and turns the
+key; nearly everything else, the ship handles on her own: missions flown and reviewed,
+the household kept, the news fetched, the books balanced, the alarms watched. A quiet
+hull with a lot going on below decks.
 
-`flake.nix` imports every `*.mod.nix` file in the tree (via
-`listFilesRecursive`), so modules are never listed centrally. Each module
-registers *aspects* into one of three collections:
+## The crew
 
-- `commonModules` — imported by every host (base system, options, secrets).
-- `nixosModules` — the menu of NixOS aspects (ssh, hyprland, tailscale, the AI
-  services, ...). All are imported into every host but most are inert until
-  enabled.
-- `homeModules` — Home Manager aspects applied to the primary user.
+**The Captain** — the only human in the crew. He is never aboard; he commands from his
+outposts, and everything that matters is his to decide: where the ship flies, what is
+good enough, what is permitted to leave the hull, and whether a new version of the
+ship is ever raised at all. He opens a shift with three words — *launch the ship* —
+and gets a report: last night's handoff read, the fleet counted, every system green or
+not. Then the ship holds, waiting for a heading. He closes the shift with *dock the
+ship*, and the watch stands down.
 
-Packages follow one convention: a tool that carries configuration gets its own
-concern file with package and settings together (`modules/cli/git.mod.nix`,
-`modules/cli/ghostty.mod.nix`); config-less tools are grouped in
-`modules/packages.mod.nix` as functional bundles; Nix-workflow tools sit with the
-Nix concern in `modules/core/nix.mod.nix`. There is no separate `home/` directory —
-a concern file registers its Home Manager aspect directly, and may also register a
-NixOS aspect (as `desktop/hyprland.mod.nix` does for the compositor and the
-session).
+**The Pilot** — the ship's resident mind, keeping the bridge watch without sleeping.
+Reach the Pilot from any outpost in the Constellation, or from beyond it through one
+guarded door — and no other. The Pilot plans beside the Captain, runs every system,
+hands the drones their orders, reads everything they carry home and believes none of
+it until it has been checked. When the watch ends, everything the watch learned is
+written down, so the next mind to sit the chair begins already knowing. The ship never
+forgets what a Pilot knew.
 
-The folders under `modules/` are namespacing only (discovery is by the
-`.mod.nix` suffix, not location): `core/` is the every-host base layer,
-`cli/` terminal tools, `desktop/` the graphical session, `networking/` and
-`server/` what their names say. `packages.mod.nix` sits at the root because
-its bundles span categories.
+**Remy** — steward and quartermaster. He keeps the household running: the family's
+tasks and lists and reminders, the morning plan posted at 07:00 and the evening report
+at 19:00, the calendar tended both ways, and the ledger in which nothing is ever truly
+struck out — every change just becomes the next line in a record that only ever grows.
+Remy's mind was grown aboard, in the inference bay, so the family's words are
+understood without once leaving the hull.
 
-`lib/` extends nixpkgs' lib under its own namespace. `lib.monix.nixosSystem
-"<name>" <module>` defines `nixosConfigurations.<name>`.
+**The newsbot** — the ship's press office. Twice a day it goes out among the stars and
+comes back with the news; ask it anything in the privacy of a small wardroom.
 
-A host (`hosts/<name>/<name>.mod.nix`) just imports the collections, sets its
-class and hardware, and enables the services it wants:
+**The alertbot** — the klaxon, and it has no mind at all: it watches everything,
+thinks nothing, and shouts the instant something breaks. Every six hours it walks the
+ship end to end, and every movement of the fleet is logged to Fleet Ops as it happens.
 
-```nix
-imports =
-  attrValues self.commonModules
-  ++ attrValues self.nixosModules;
+**The bosun** — responsible for the maintenance of the ship: not one mind but an
+omnipresent, decentralized collection of small systems, each tending its own corner
+while the ship sleeps.
 
-isDesktop = true;            # or false for a server
-nixpkgs.hostPlatform = "x86_64-linux";
-disko.devices.disk.main = { ... };   # declarative disk layout (see disko.mod.nix)
-system.stateVersion = "26.05";
-```
+## The drones
 
-There is no `hardware-configuration.nix`: the host module carries the few
-per-machine hardware facts (initrd kernel modules, microcode) directly, and
-the disk layout is declared with disko, which both generates the mount config
-and can format a blank disk to match.
+Eight empty shells wait in the **hangar**, kept warm: *astrapia, cicinnurus,
+drepanornis, epimachus, lophorina, manucodia, paradisaea, seleucidis*, named for the
+birds-of-paradise. When a mission comes down, the hangar decants a mind into a shell —
+chosen fresh for that one flight, hired off a distant star or grown in the ship's own
+bay — and hands it a single sealed credential and a capsule holding its orders and
+every scrap it will need, because a drone never sees the ship's archives. Then it
+departs on its mission.
 
-### Desktop vs server
+Due to the dangerous nature of their work, drones keep only a limited connection to
+the Kestrel, so that nothing they encounter can corrupt the main systems — and are
+recycled and rebuilt after every run. Each flies with sealed provisions cloned from
+the ship's stores, no charts, no engine of its own, and a single guarded channel to
+its mind's home star. From the bridge the Pilot can watch a drone's log scroll, send
+a word to steer by mid-flight, and answer when it calls for help. When the work is
+done, only the report, the log, and the patch come home. The shells keep no wounds
+and no memories. The fleet has flown more than a hundred and fifty missions.
 
-The single switch is `isDesktop` (default `false` ⇒ server). Desktop aspects
-(Hyprland, audio, fonts, NetworkManager, the user's graphical session) gate on
-it with `mkIf config.isDesktop`, so a server simply omits them by leaving the
-flag false. Service aspects (LiteLLM, Open WebUI, Tailscale) gate on their own
-`enable` option, which the host turns on.
+## The decks
 
-## Adding a host
+- **The bridge** — the standing watch, and the seat the ship is flown from. Plans are
+  drawn here, drones dispatched, reports read, and the shift handoff written for
+  whoever sits the chair next.
+- **The engine bay** (`~/ark`) — the ship's own source.
+- **The cargo hold** (`~/hold`) — where projects ride while they prove they deserve a
+  berth in the engine bay. Many don't.
+- **The hangar** — eight warm shells and the machinery that fills them, one mission at
+  a time.
+- **The rec room** — a small private world for friends and family. Boarding is by the
+  Captain's invitation and by no other means.
+- **The comms room** — the household's own array, sovereign, unfederated,
+  invitation-only, with the household books kept beside it. Remy and the bots have
+  their quarters here.
+- **The inference bay** — where the ship grows minds of her own: local, tetherless,
+  free. They keep Remy thinking and stand ready to fill an empty drone.
+- **The vault** — the ship's secrets, sealed so that each hull can open only its own
+  share, with its own key, and never another's.
 
-1. `mkdir hosts/<name>` and create `hosts/<name>/<name>.mod.nix` (copy fw3 or
-   fw0). Set `isDesktop`, `nixpkgs.hostPlatform`, `system.stateVersion`.
-2. Set the hardware facts and disko layout in the host module (crib the
-   kernel-module list from `nixos-generate-config --show-hardware-config` on
-   the machine; point `disko.devices.disk.main.device` at the disk's
-   `/dev/disk/by-id/...` path).
-3. Add the host's SSH host public key to `keys.nix` under `hosts.<name>`.
-4. Add the host's secret rules to `secrets.nix` and create the secrets.
-5. Build: `nixos-rebuild switch --flake .#<name>`.
+## The Constellation
 
-No other file needs editing — auto-discovery and the aspect collections handle
-the rest.
+The Kestrel does not fly alone. A private relay net — the **Constellation** — binds
+the ship to the Captain's outposts, **fw3** among them. From any of them he takes the
+helm; the ship is wherever the Captain is sitting.
 
-## Secrets (agenix)
+---
 
-agenix manages fw0's fleet subscription credentials, optional provider keys,
-and Cloudflare Tunnel token. Login passwords remain imperative. The disabled
-LiteLLM/Open WebUI examples still have placeholder secret files and must not be
-enabled until those specific files are replaced with real age ciphertext.
-
-`keys.nix` is the single source of truth for SSH public keys (host keys + admin
-keys). `secrets.nix` maps each secret file to the keys it is encrypted to and is
-read by the `agenix` CLI. Secrets are decrypted on the host using its SSH host
-key (`/etc/ssh/ssh_host_ed25519_key`).
-
-**Bootstrap (per host):**
-
-1. On the target machine, ensure host keys exist: `ssh-keygen -A`.
-2. Copy its public key into `keys.nix`:
-   `cat /etc/ssh/ssh_host_ed25519_key.pub`.
-3. Put your personal public key in `keys.nix` under `admin`.
-4. Create the needed secrets (an entry must already exist in `secrets.nix`):
-
-   ```sh
-    agenix -e hosts/fw0/agent-claude-token.age
-    agenix -e hosts/fw0/agent-codex-auth.age
-    agenix -e hosts/fw0/opencode-web-cloudflare-tunnel-token.age
-   ```
-
-`tailscale.age` holds a one-line reusable auth key (`tskey-auth-...`).
-
-> Users are mutable (the NixOS default) — after install, set each account's
-> login password imperatively with `passwd`. Login never depends on agenix,
-> so a host can be built and activated with no secrets present at all.
-
-## The agent fleet on fw0
-
-fw0 hosts a ten-worker warm pool of disposable microVMs in which Claude Code,
-Codex, or opencode runs one fully-permissioned task. Workers are contained by
-KVM, a host-only isolated bridge, no gateway/DNS, a default-deny squid egress
-proxy, executor-specific Unix credentials, bounded host-file exchange, and
-fleet-wide resource limits. They have no forge access: the cockpit supplies a
-source capsule and receives a report plus patch. The primary cockpit is
-available through tmux/SSH and at `ai.su.is` through Cloudflare Access. See
-[docs/agent-fleet.md](docs/agent-fleet.md) for mechanics and trust boundaries.
-
-How a task moves through the system, end to end:
-
-![fleet task flow](docs/img/fleet-flow-1.svg)
-
-<details><summary>Diagram source (Mermaid)</summary>
-
-```mermaid
-flowchart TD
-    CAP([Captain states a goal]) --> CKPT{"Cockpit:<br/>how to do this?"}
-
-    CKPT -->|"clarify / decision only the<br/>captain can make (taste, scope,<br/>destructive, push, switch)"| ASK[Ask the captain] --> CAP
-    CKPT -->|"small, local, or depends on<br/>unpushed/private host state"| LOCAL[Do it in the cockpit session]
-    CKPT -->|substantial + self-contained| PLAN["Write task file:<br/>choose agent + model + effort<br/>+ guidance per task"]
-
-    PLAN --> DISPATCH[fleet dispatch / submit<br/>via scoped sudo → queue]
-    DISPATCH --> DRONE[Drone runs the task<br/>in a warm microVM]
-
-    DRONE <-->|"peek / steer /<br/>escalate / answer"| MID[Mid-task interaction<br/>with the cockpit]
-    DRONE --> RESULT["Archive: report, log, patch,<br/>usage, progress, messages, Q&A"]
-
-    RESULT --> REVIEW{Cockpit reviews<br/>UNTRUSTED output}
-    REVIEW -->|inadequate / failed| PLAN
-    REVIEW -->|"needs a stronger model<br/>or different provider"| PLAN
-    REVIEW -->|good| APPLY[Apply patch, verify,<br/>commit locally]
-
-    LOCAL --> VERIFY["Verify: build / test / run"]
-    APPLY --> VERIFY
-    VERIFY --> REPORT([Report up to the captain])
-    REPORT -->|push? switch? next heading?| CAP
-```
-
-</details>
-
-The full decision tree — dispatch routing, the worker VM lifecycle with all
-failure paths, every mid-task interaction (live peek, steering, escalation
-with three advisor backends), and the results flow — is in
-[docs/fleet-flow.md](docs/fleet-flow.md).
-
-## The AI stack on fw0
-
-Declared in `hosts/fw0/fw0.mod.nix` but currently commented out (the `.age`
-secret files are placeholders — see the warning above). When enabled:
-
-- **LiteLLM** runs on `127.0.0.1:4000` as an OpenAI-compatible gateway. Its
-  `model_list` (in `hosts/fw0/fw0.mod.nix`) is illustrative — edit it for your
-  providers. `os.environ/NAME` reads NAME from `litellm.env.age`, which must
-  define `LITELLM_MASTER_KEY` and every referenced provider key, e.g.:
-
-  ```sh
-  LITELLM_MASTER_KEY=sk-...generate-a-strong-key...
-  OPENAI_API_KEY=sk-...your-openai-key...
-  ANTHROPIC_API_KEY=sk-ant-...your-anthropic-key...
-  ```
-
-- **Open WebUI** runs on `0.0.0.0:8080` and uses LiteLLM as its backend
-  (`OPENAI_API_BASE_URL=http://127.0.0.1:4000/v1`). `open-webui.env.age` must
-  set `OPENAI_API_KEY` to the **same value** as LiteLLM's `LITELLM_MASTER_KEY`
-  (this is how Open WebUI authenticates to LiteLLM), plus a `WEBUI_SECRET_KEY`:
-
-  ```sh
-  OPENAI_API_KEY=sk-...same-as-LITELLM_MASTER_KEY...
-  WEBUI_SECRET_KEY=...generate-a-strong-key...
-  ```
-
-Neither service opens the public firewall. They are reachable over **Tailscale**
-(the `tailscale0` interface is trusted) and via localhost. Reach Open WebUI at
-`http://<fw0-tailscale-ip>:8080`.
-
-## Building
-
-```sh
-nix flake check                          # evaluate everything
-nixos-rebuild switch --flake .#fw3       # or .#fw0
-```
-
-First install of a host, from any NixOS installer ISO (formats the disk
-declared in the host's disko layout — destructive, check the device path):
-
-```sh
-sudo nix run github:nix-community/disko -- --mode disko --flake .#<host>
-sudo nixos-install --flake .#<host>
-```
-
-## Design choices (deliberate)
-
-- **Linux-only** — no darwin/macOS support.
-- **`isDesktop` flag** with `mkIf` gating rather than per-host aspect menus —
-  every aspect is imported everywhere and gates itself.
-- **Home Manager** for the user session (best Hyprland support), organised as
-  `homeModules` aspects.
-- **No hardware-configuration.nix / nixos-facter** — per-host hardware facts
-  live directly in the host module; disk layouts are declared with disko.
-- **Explicit `secrets.nix` rules** (so `agenix -e` works when first creating a
-  secret); agenix identity is the system SSH host key rather than a separate
-  key partition.
-- **No pipe operators** — see AGENTS.md.
-
-## The desktop (fw3)
-
-- **Hyprland config is written in Lua** (`configType = "lua"`), not hyprlang.
-  Hyprland deprecated hyprlang at 0.55 (nixpkgs currently ships 0.55.4) in
-  favor of Lua, with hyprlang stated to be dropped "1-2 releases" after 0.55.
-  Binds are built with a small `mkBind`/`mkEnv` helper in
-  `modules/desktop/hyprland.mod.nix`; each bind carries a `description`,
-  read back at runtime via `hyprctl binds -j` to power the DMS keybinds
-  overlay (SUPER+K) — a `.lua` config is executed, not parseable, so the
-  live bind list is the only reliable source.
-- **Hyprland is pulled from nixpkgs**, not a git flake input. The session is
-  managed by UWSM (greetd → `uwsm start` → Hyprland; see the session-entry
-  comment in `hyprland.mod.nix`).
-- The desktop shell is **DankMaterialShell** (DMS): the bar, notifications,
-  app launcher (spotlight), OSD, control center, lock screen with idle
-  handling, wallpaper manager, clipboard history UI, and polkit agent all
-  come from it (`modules/desktop/dank.mod.nix`, `programs.dms-shell` from
-  nixpkgs; the `dank-material-shell` flake input supplies the greetd greeter
-  and a newer shell build — see the comments there).
-- **Theming:** DMS's dynamic (wallpaper-synced) theming is enabled for
-  GTK/Qt apps via matugen + adw-gtk3 + qt5ct/qt6ct; other apps (ghostty,
-  btop, Hyprland borders) use their default themes. CaskaydiaMono Nerd Font
-  is the desktop's default monospace font.
+*Technical documents and schematics: [the ship's manual](docs/manual.md).*
