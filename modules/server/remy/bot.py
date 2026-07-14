@@ -5,8 +5,9 @@ One bot, two rooms, room-scoped skills:
   - "Household" (created by the bot on first start, family invited):
     tasks with due dates and named lists in plain language ("we need to
     take the car in by Friday", "add milk and eggs to shopping"), plus a
-    morning plan (07:00) and evening report (19:00) with week-ahead
-    sections on Sunday evening and Monday morning, folding in the family
+    morning plan (07:00, with a rest-of-the-week section through Sunday)
+    and evening report (19:00, with a week-ahead section on Sunday for
+    the Monday–Sunday week starting next day), folding in the family
     calendar (calendar.json, written by the separate remy-calendar-sync
     unit — this process never leaves loopback).
 
@@ -396,6 +397,9 @@ Pending reminders (id time text):
 {reminders}
 
 Rules:
+- Weeks run Monday–Sunday. "this week" = through the coming Sunday
+  (inclusive); "next week" = the following Monday–Sunday; "the weekend" =
+  the coming Saturday/Sunday.
 - Something the family needs to do ("we need to X by Friday", "X by today/EOD",
   "Thursday we need to X", "remind us to X") => intent task_add. title short,
   imperative, no dates or names in it; due as ISO yyyy-mm-dd (resolve
@@ -696,7 +700,7 @@ def do_tasks_show(db, act):
         rows = [r for r in rows if r["due"] and r["due"] < now.isoformat()]
         head = "Overdue:"
     elif scope == "week":
-        end = (now + timedelta(days=7)).isoformat()
+        end = (now + timedelta(days=6 - now.weekday())).isoformat()
         rows = [r for r in rows if r["due"] and r["due"] <= end]
         head = "This week:"
     else:
@@ -769,20 +773,20 @@ def do_list_clear(db, act):
     return f"🧹 cleared {ln} ({n} items; restorable from history)"
 
 
-def week_section(db, start):
-    """The 7 days from `start`: calendar events by day, then the week's
-    tasks as their own list (captain's preference over inlining them
-    into their due days)."""
-    end = start + timedelta(days=6)
+def week_section(db, start, title="📅 Week ahead:"):
+    """From `start` through that week's Sunday (weeks run Monday–Sunday):
+    calendar events by day, then the week's tasks as their own list
+    (captain's preference over inlining them into their due days)."""
+    end = start + timedelta(days=6 - start.weekday())
     tasks = [r for r in open_tasks(db)
              if r["due"] and start.isoformat() <= r["due"] <= end.isoformat()]
     events, _ = calendar_events(start, end)
     if not tasks and not events:
-        return "📅 Week ahead: clear so far."
+        return f"{title} clear so far."
     by_day = {}
     for ev in events:
         by_day.setdefault(ev["start"][:10], []).append("◦ " + fmt_event(ev))
-    lines = ["📅 Week ahead:"]
+    lines = [title]
     for d in sorted(by_day):
         lines.append(date.fromisoformat(d).strftime("%A %b %-d") + ":")
         lines += ["  " + s for s in by_day[d]]
@@ -815,9 +819,10 @@ def morning_post(db):
         lines.append(note)
     if len(lines) == 1:
         lines.append("Nothing scheduled — enjoy the day.")
-    if now.weekday() == 0:  # Monday: look at the week
+    if now.weekday() < 6:  # the rest of the week, through Sunday
         lines.append("")
-        lines.append(week_section(db, now))
+        lines.append(week_section(db, now + timedelta(days=1),
+                                  "📅 Rest of the week:"))
     return "\n".join(lines)
 
 
