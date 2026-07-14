@@ -163,6 +163,16 @@ in
           else
             null;
 
+        # News digests (newsbot.mod.nix): 07:00/19:00 posts to a private
+        # "News" room, compiled by headless claude with web search on the
+        # fleet's subscription token. Captain-only for now; prompt tuning
+        # happens in modules/server/newsbot/prompt.md.
+        newsbot.enable = true;
+        newsbot.credentialsEnvFile = config.secrets.matrix-newsbot-env.path;
+        newsbot.registrationEnvFile = config.secrets.matrix-registration-env.path;
+        newsbot.claudeTokenFile = config.secrets.agent-claude-token.path;
+        newsbot.inviteUsers = [ "@dylan:chat.su.is" ];
+
         # opencode web UI cockpit seat, exposed through Cloudflare Tunnel.
         # Authentication belongs at the Cloudflare Access layer; do not set
         # cockpit.webEnvFile here unless deliberately re-enabling opencode's
@@ -214,6 +224,9 @@ in
           };
           matrix-remy-env = {
             file = ./secrets/matrix-remy.env.age;
+          };
+          matrix-newsbot-env = {
+            file = ./secrets/matrix-newsbot.env.age;
           };
         }
         // lib.optionalAttrs (builtins.pathExists ./secrets/remy-caldav.json.age) {
