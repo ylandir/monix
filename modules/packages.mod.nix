@@ -158,10 +158,6 @@
           pkgs.claude-code
           pkgs.codex
           pkgs.opencode
-          # xAI's coding agent (has headless -p like codex, so it can join
-          # the fleet executors later once its credential story is settled;
-          # for now a cockpit/desktop seat to log in and evaluate).
-          pkgs.grok-build
           pkgs.hugo
           # The codex Claude Code plugin's hooks invoke `node` directly.
           pkgs.nodejs
