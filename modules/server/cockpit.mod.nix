@@ -61,6 +61,10 @@
               "Bash(nix flake *)"
               "Bash(nix run nixpkgs#shellcheck *)"
               "Read(//home/max/ark/monix/**)"
+              # Memory reads must never prompt during pre-flight; cover both
+              # the real directory and the auto-memory symlink into it.
+              "Read(//home/max/cockpit/memory/**)"
+              "Read(//home/max/.claude/projects/-home-max-cockpit/memory/**)"
               "WebFetch(domain:github.com)"
               "WebSearch"
               "SendUserFile"
