@@ -111,9 +111,9 @@
     text block. Do not replace it with an improvised summary. The command is
     also available directly in a terminal; its sections are ship systems —
     BRIDGE (host), REACTOR (memory domains), SYSTEMS (services), DRONE BAY (the
-    fleet), LEDGER (API-equivalent spend, from `ship-costs`), REC DECK
-    (Minecraft) — and the layout is responsive (wide on desktop, stacked on a
-    phone). `ship-costs` still runs standalone for just the spend ledger.
+    fleet), REC DECK (Minecraft) — and the layout is responsive (wide on
+    desktop, stacked on a phone). Spend is not on the dashboard (the estimates
+    are too rough); the standalone `ship-costs` shows the ledger on demand.
 
     ## Your role as engineer
 

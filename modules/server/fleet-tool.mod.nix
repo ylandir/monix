@@ -546,8 +546,9 @@
 
       # ship-status — the combined ship dashboard, in nushell. Sections are
       # ship systems: BRIDGE (host), REACTOR (memory domains), SYSTEMS
-      # (services), DRONE BAY (the fleet), LEDGER (spend, embeds ship-costs),
-      # REC DECK (minecraft). Responsive: a wide boxed grid on desktop, stacked
+      # (services), DRONE BAY (the fleet), REC DECK (minecraft). Spend lives in
+      # the standalone ship-costs, not here (its numbers are too rough for a
+      # dashboard). Responsive: a wide boxed grid on desktop, stacked
       # single-column on a phone (nu `term size`; SHIP_COLS overrides). Installed
       # as both `ship-status` (the ritual name) and `ship` (short alias).
       shipStatus = pkgs.writeScriptBin "ship-status" ''
@@ -670,13 +671,6 @@
             }
           }
           print $"│ pool (esc attr_bold)($warm)/($workers | length) warm(esc reset)  (esc yellow)($starting) starting(esc reset)  (esc red)($failed_w) failed(esc reset)"
-
-          rule "├" "┤" "LEDGER" $bw "cyan"
-          let cw = ($bw - 2 | into string)
-          let costs = (with-env { COLUMNS: $cw, NO_COLOR: "1" } { try { ^ship-costs --bare | complete | get stdout } catch { "(ship-costs unavailable)" } })
-          for line in ($costs | lines) {
-            if ($line | str trim | is-empty) { print "│" } else { print $"│ ($line)" }
-          }
 
           rule "├" "┤" "REC DECK" $bw "cyan"
           let tip = (try { ^tailscale ip -4 | lines | first | str trim } catch { "" })
