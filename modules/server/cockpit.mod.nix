@@ -82,10 +82,12 @@
         edit = mkOpenCodeRules (map (path: "${path}/**") claudeFilePermissions);
         write = mkOpenCodeRules (map (path: "${path}/**") claudeFilePermissions);
         external_directory = mkOpenCodeRules (map (path: "${path}/**") claudeFilePermissions);
-        glob = "ask";
-        grep = "ask";
-        list = "ask";
-        task = "ask";
+        # Claude permits its built-in discovery and delegation tools without
+        # explicit allowlist entries; preserve that behavior in OpenCode.
+        glob = "allow";
+        grep = "allow";
+        list = "allow";
+        task = "allow";
         webfetch = "ask";
         websearch = "allow";
         todowrite = "allow";
