@@ -17,7 +17,81 @@
     }:
     let
       guide = import ../../lib/fleet-guide.nix;
+      inherit (lib.attrsets) genAttrs;
+      inherit (lib.lists) concatMap map;
       inherit (lib.modules) mkIf;
+      userHome = "/home/${osConfig.primaryUser}";
+      monixDir = "${userHome}/ark/monix";
+      cockpitMemoryDir = "${userHome}/cockpit/memory";
+      claudeMemoryDir = "${userHome}/.claude/projects/-home-max-cockpit/memory";
+      # Claude's cockpit policy is canonical. Render both frontend-specific
+      # formats from it so a future permission change cannot drift by harness.
+      claudeBashPermissions = [
+        "sudo -n -u fleet-operator fleet *"
+        "fleet dispatch *"
+        "ship-status"
+        "nix build *"
+        "nix eval *"
+        "nix flake *"
+        "nix run nixpkgs#shellcheck *"
+        "nix search *"
+        "tailscale status*"
+        # The captain's standing policy is "commit and test freely, push only
+        # on his word": stage/commit never prompt, push remains absent.
+        "git -C ${monixDir} add *"
+        "git -C ${monixDir} commit *"
+        # journalctl mutations require root; systemctl gets only read verbs.
+        "journalctl*"
+        "systemctl status*"
+        "systemctl show*"
+        "systemctl cat*"
+        "systemctl list-units*"
+        "systemctl list-timers*"
+        "systemctl list-unit-files*"
+        "systemctl list-dependencies*"
+        "systemctl is-active*"
+        "systemctl is-enabled*"
+        "systemctl is-failed*"
+        "systemctl --failed*"
+        "systemctl --user status*"
+        "systemctl --user list-units*"
+      ];
+      claudeFilePermissions = [
+        monixDir
+        cockpitMemoryDir
+        claudeMemoryDir
+      ];
+      claudeAllow =
+        map (command: "Bash(${command})") claudeBashPermissions
+        ++ concatMap (path: [
+          "Read(/${path}/**)"
+          "Edit(/${path}/**)"
+          "Write(/${path}/**)"
+        ]) claudeFilePermissions
+        ++ [
+          "WebFetch(domain:github.com)"
+          "WebSearch"
+          "SendUserFile"
+        ];
+      # OpenCode evaluates the final matching permission rule. Keep the
+      # catch-all first, then append the current Claude-approved capabilities.
+      mkOpenCodeRules = patterns: { "*" = "ask"; } // genAttrs patterns (_: "allow");
+      opencodePermissions = {
+        bash = mkOpenCodeRules claudeBashPermissions;
+        read = mkOpenCodeRules (map (path: "${path}/**") claudeFilePermissions);
+        edit = mkOpenCodeRules (map (path: "${path}/**") claudeFilePermissions);
+        write = mkOpenCodeRules (map (path: "${path}/**") claudeFilePermissions);
+        external_directory = mkOpenCodeRules (map (path: "${path}/**") claudeFilePermissions);
+        glob = "ask";
+        grep = "ask";
+        list = "ask";
+        task = "ask";
+        webfetch = "ask";
+        websearch = "allow";
+        todowrite = "allow";
+        question = "allow";
+        skill = "allow";
+      };
     in
     {
       config = mkIf osConfig.cockpit.enable {
@@ -28,6 +102,32 @@
         home.file."cockpit/CLAUDE.md" = {
           force = true;
           text = "@AGENTS.md\n";
+        };
+
+        # OpenCode's native permissions are generated from the established
+        # Claude cockpit allowlist. Its config is normally mutable state, but
+        # this cockpit policy must not drift by frontend.
+        home.file.".config/opencode/opencode.jsonc" = {
+          force = true;
+          text = builtins.toJSON {
+            "$schema" = "https://opencode.ai/config.json";
+            provider.local = {
+              npm = "@ai-sdk/openai-compatible";
+              name = "fw0 local inference";
+              options = {
+                baseURL = "http://127.0.0.1:8091/v1";
+                apiKey = "local";
+              };
+              models = {
+                "qwen3.6-35b-a3b" = { };
+                "gpt-oss-120b" = { };
+              };
+            };
+            permission = opencodePermissions;
+            # OpenCode's primary built-in agent otherwise appends its permissive
+            # defaults after top-level configuration.
+            agent.build.permission = opencodePermissions;
+          };
         };
 
         # Durable cockpit memory lives at the vendor-neutral path for real:
@@ -51,61 +151,7 @@
         home.file."cockpit/.claude/settings.json" = {
           force = true;
           text = builtins.toJSON {
-            permissions.allow = [
-              "Bash(sudo -n -u fleet-operator fleet *)"
-              "Bash(fleet dispatch *)"
-              "Bash(ship-status)"
-              "Bash(nix build *)"
-              "Bash(nix eval *)"
-              "Bash(nix flake *)"
-              "Bash(nix run nixpkgs#shellcheck *)"
-              "Bash(nix search *)"
-              "Bash(tailscale status*)"
-              # The captain's standing policy is "commit and test freely,
-              # push only on his word": stage/commit in the flake never
-              # prompts, while push (not listed) always does. The absolute
-              # path is deliberate — the pattern is textual, so the cockpit
-              # must spell the repo as /home/max/ark/monix (no ~).
-              "Bash(git -C /home/max/ark/monix add *)"
-              "Bash(git -C /home/max/ark/monix commit *)"
-              # Read-only observability must never prompt: journals and unit
-              # state are how the cockpit verifies anything. journalctl's
-              # mutating verbs (--vacuum-*, --rotate, --flush) are root-only
-              # and fail as max, so the bare prefix is safe; systemctl gets
-              # only its read verbs (the bare prefix would cover start/stop).
-              "Bash(journalctl*)"
-              "Bash(systemctl status*)"
-              "Bash(systemctl show*)"
-              "Bash(systemctl cat*)"
-              "Bash(systemctl list-units*)"
-              "Bash(systemctl list-timers*)"
-              "Bash(systemctl list-unit-files*)"
-              "Bash(systemctl list-dependencies*)"
-              "Bash(systemctl is-active*)"
-              "Bash(systemctl is-enabled*)"
-              "Bash(systemctl is-failed*)"
-              "Bash(systemctl --failed*)"
-              "Bash(systemctl --user status*)"
-              "Bash(systemctl --user list-units*)"
-              "Read(//home/max/ark/monix/**)"
-              # The flake is the cockpit's workspace and git is the undo:
-              # editing repo files must not prompt (commit/push authority is
-              # governed separately — push always asks).
-              "Edit(//home/max/ark/monix/**)"
-              "Write(//home/max/ark/monix/**)"
-              # Memory must never prompt — reads during pre-flight, writes
-              # during shift and at dock (HANDOFF rewrite, memory hygiene).
-              # Cover both the real directory and the auto-memory symlink.
-              "Read(//home/max/cockpit/memory/**)"
-              "Edit(//home/max/cockpit/memory/**)"
-              "Write(//home/max/cockpit/memory/**)"
-              "Read(//home/max/.claude/projects/-home-max-cockpit/memory/**)"
-              "Edit(//home/max/.claude/projects/-home-max-cockpit/memory/**)"
-              "Write(//home/max/.claude/projects/-home-max-cockpit/memory/**)"
-              "WebFetch(domain:github.com)"
-              "WebSearch"
-              "SendUserFile"
-            ];
+            permissions.allow = claudeAllow;
           };
         };
 
