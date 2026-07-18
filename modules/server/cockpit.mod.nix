@@ -27,6 +27,25 @@
       claudeMemoryDir = "${userHome}/.claude/projects/-home-max-cockpit/memory";
       # Claude's cockpit policy is canonical. Render the shared explicit
       # permissions in both frontend-specific formats.
+      gitReadCommands = [
+        "status*"
+        "diff*"
+        "log*"
+        "show*"
+        "blame*"
+        "rev-parse*"
+        "merge-base*"
+        "ls-files*"
+        "ls-tree*"
+        "cat-file*"
+        "branch --show-current*"
+        "remote -v"
+        "tag --list*"
+      ];
+      gitReadPermissions = concatMap (command: [
+        "git ${command}"
+        "git -C * ${command}"
+      ]) gitReadCommands;
       claudeBashPermissions = [
         "sudo -n -u fleet-operator fleet *"
         "fleet dispatch *"
@@ -38,6 +57,9 @@
         "nix run nixpkgs#shellcheck *"
         "nix search *"
         "tailscale status*"
+      ]
+      ++ gitReadPermissions
+      ++ [
         # The captain's standing policy is "commit and test freely, push only
         # on his word": stage/commit never prompt, push remains absent.
         "git -C ${monixDir} add *"
