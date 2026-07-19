@@ -70,12 +70,11 @@ flowchart TD
     EXEC -->|"bulk low-stakes volume<br/>(free, weaker, on-GPU)"| LOCALM[opencode / local/…]
     EXEC -->|"frontier judgment inside<br/>the Claude pool"| FABLE[claude / fable]
 
-    HAIKU & SONNET & SOL & OR & LOCALM & FABLE --> GUID{Advisor for escalations?}
-    GUID -->|"none, or omitted with no<br/>fleet-wide default configured<br/>(the current default)"| G0["guidance: none —<br/>escalations answered<br/>'use your own judgment'"]
-    GUID -->|"a stronger Claude model"| G1["guidance: &lt;claude-model&gt; —<br/>headless advisor answers<br/>(5-min timeout → fall back to<br/>'use your own judgment')"]
-    GUID -->|"the live cockpit itself"| G2["guidance: cockpit —<br/>questions surface to the engineer"]
+    HAIKU & SONNET & SOL & OR & LOCALM & FABLE --> GUID{Escalation channel?}
+    GUID -->|"omitted (the default)"| G0["no channel —<br/>escalations answered instantly<br/>'use your own judgment';<br/>a blocked drone reports<br/>what's missing and exits"]
+    GUID -->|"the live cockpit"| G2["guidance: cockpit —<br/>questions surface to the engineer"]
 
-    G0 & G1 & G2 --> CTX{Does it need source context?}
+    G0 & G2 --> CTX{Does it need source context?}
     CTX -->|yes| CAPSULE["fleet dispatch &lt;slug&gt; task.md &lt;dir&gt;<br/>→ capsule (prompt ≤1 MiB + context<br/>≤512 MiB compressed, .git/.env excluded)"]
     CTX -->|"no (prompt is self-sufficient)"| SUBMIT["fleet submit &lt;slug&gt; < task.md"]
 
@@ -155,8 +154,7 @@ flowchart TD
     SPOOL -->|"drainer delivers<br/>→ STEERED"| MSGS
 
     QN -->|"≤64 KiB each"| WHO{Task's guidance setting}
-    WHO -->|"none / no default"| AUTO["Instant answer:<br/>'use your own judgment'"] --> ANS
-    WHO -->|"claude model id"| ADVISOR["agent-guidance service:<br/>headless advisor, no tools,<br/>reads spooled Q + prompt;<br/>5-min timeout → 'use your<br/>own judgment' fallback"] --> ANS
+    WHO -->|"anything but cockpit"| AUTO["Instant answer:<br/>'use your own judgment'"] --> ANS
     WHO -->|cockpit| ATTN["fleet health: questions-pending<br/>+ ATTENTION line; visible in peek"] --> ENG
     ENG -->|"fleet answer &lt;id&gt; &lt;n&gt;<br/>(may consult the captain first)"| ANS[answer-N.md ≤1 MiB<br/>delivered into the guest]
     ANS -->|"agent unblocks (waits<br/>up to 30 min, then proceeds<br/>on its own judgment)"| AGENT
@@ -169,19 +167,9 @@ flowchart TD
 Two invariants hold everywhere in this diagram: the host **displays**
 guest-written content and **delivers** cockpit-written files, but never
 takes instructions from guest prose. The host acts only on narrow machine
-fields it defined itself: `exit-code` for task routing, root-produced
-`usage.json` for the cost ledger, and for outer-loop verifier tasks a schema/digest/check-ID-validated
-`verification.json`. All are bounded and format-checked. Everything crossing the boundary is a bounded
+fields it defined itself: `exit-code` for task routing and the root-produced
+`usage.json` for the cost ledger. Both are bounded and format-checked. Everything crossing the boundary is a bounded
 regular file moved with no-follow semantics.
-
-Outer loops compose this same task lifecycle. A cockpit-sealed base capsule and
-explicit policy enter a Rust controller running as `fleet-operator`; each
-iteration dispatches a normal authenticated implementation VM followed by a
-fresh credentialless verifier VM. Accepted patches remain an opaque ordered
-ledger on the host and are materialized only in guests. Passing every sealed
-completion check yields `VERIFIED_CANDIDATE`; this also covers an already-complete
-base with an empty candidate. The result still requires cockpit
-review/application and captain-controlled push or activation.
 
 ## 5. Results: from archive to the captain
 
@@ -227,8 +215,7 @@ SUBMIT → DISPATCH → [STEER → STEERED]*
 ```
 
 A pre-pickup stall instead logs a requeue and later a second `DISPATCH`.
-Model-advisor escalations log only `ESCALATE` — the guidance service
-answers without further log lines. Add `NOTE` for free-text cockpit
+Add `NOTE` for free-text cockpit
 annotations and rejection lines for anything that failed a trust check.
 `fleet status` tails the log; `ship-status` shows the live pool;
 `ship-costs` attributes each task's tokens to its subscription pool.

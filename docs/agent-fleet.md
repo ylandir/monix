@@ -10,7 +10,7 @@ The implementation is split by concern:
 
 - `cockpit.mod.nix`: the full-power human seat (tmux/SSH and opencode web).
 - `fleet-tool.mod.nix`: the scoped cockpit CLI and unprivileged queue operator.
-- `agent-dispatch.mod.nix`: queue scheduling, worker lifecycle, guidance, and results.
+- `agent-dispatch.mod.nix`: queue scheduling, worker lifecycle, question relay, and results.
 - `agent-vm.mod.nix`: disposable guest definition, executors, and credentials.
 - `microvm-host.mod.nix`: KVM runner, bridge, firewall, and squid egress proxy.
 - `inference.mod.nix`: optional ship-local models exposed to workers.
@@ -94,7 +94,7 @@ and root drainer retain separate validation at their trust boundaries.
 The selected executor can still read its own credential because its subscription
 CLI requires it. Generic workers have no attacker-controlled network destination
 or forge credential to which they can send it. Their intended outputs are only
-the bounded task exchange and optional host-spooled guidance.
+the bounded task exchange.
 
 Never place secrets in the Nix store: workers can read the host store through a
 read-only virtiofs mount.
@@ -121,11 +121,6 @@ run patch "$id"                 # bounded automatic git diff
 run status                      # recent lifecycle log
 run health                      # current queue, workers, units, memory, disk
 run note "$id" reviewed-output
-fleet loop create fix-cancel loop.json /path/to/repository
-run loop list
-run loop status <loop-id>
-run loop pause|resume|cancel <loop-id>
-run loop export <loop-id>        # verified candidate patch; no automatic apply
 ```
 
 `submit` reads standard input, limits prompts to 1 MiB, publishes atomically,
@@ -159,19 +154,19 @@ Executors:
 The cockpit must never silently substitute a provider. If the requested
 executor cannot authenticate, fail and report that limitation.
 
-`guidance` is optional. The current advisor implementation invokes Claude Code
-with all tools disallowed, so this value must be a Claude model id. `none` or an
-absent value means no advisor unless a fleet-wide Claude default is configured.
-The special value `cockpit` routes escalations to the live cockpit: the drainer
-publishes the question to the task's live view, `fleet health` flags it as
-`questions-pending`, and the cockpit replies with `fleet answer <id> <n>` (the
-guest waits up to 30 minutes before proceeding on its own judgment).
-Cross-provider guidance needs a future executor-qualified advisor interface.
+`guidance` is optional and has exactly one meaningful value: `cockpit` routes
+escalations to the live cockpit — the drainer publishes the question to the
+task's live view, `fleet health` flags it as `questions-pending`, and the
+cockpit replies with `fleet answer <id> <n>` (the guest waits up to 30 minutes
+before proceeding on its own judgment). Any other or absent value means the
+drainer answers `ask-cockpit` immediately with "use your own judgment": there
+is no advisor tier, and an unattended drone that is genuinely blocked is
+expected to state what is missing in its report and exit.
 
 `timeout` is an optional positive per-task front-matter value capped by the
-fleet-wide six-hour maximum. The loop controller also uses a validated
-deterministic `task-key` so crash recovery resolves to the same queued, running,
-or archived task rather than duplicating an iteration.
+fleet-wide six-hour maximum. A validated deterministic `task-key` lets a
+resubmitted task resolve to the same queued, running, or archived task instead
+of duplicating it.
 
 ## Live interaction with a running task
 
@@ -192,105 +187,14 @@ containment:
   before writing the final report; delivery is host-guaranteed, pickup is
   instruction-driven. Numbers are never reused within a task.
 - **Answer.** For `guidance: cockpit` tasks, `fleet answer <id> <n>` queues the
-  reply in the operator spool `tasks/answers/`; the drainer stages it into the
-  host-owned guidance spool and the existing answer-delivery path pushes it to
-  the guest. Question numbers remain host-validated to 1–5.
+  reply in the operator spool `tasks/answers/`; the drainer delivers it into the
+  guest exchange as `answer-N.md` and mirrors it to the live view. Question
+  numbers remain host-validated to 1–5.
 
 Live artifacts (progress, delivered messages, questions and answers) are
 archived with the task result and the live directory is removed. The host never
 parses or acts on any of this content — it only displays it to the cockpit and
 delivers cockpit-authored files to the guest.
-
-## Durable outer loops
-
-Outer loops add orchestration above the existing one-task/one-VM runtime; they
-do not replace it. `fleet loop create` snapshots the repository as the cockpit
-user, seals a JSON policy, then hands the capsule across the existing scoped
-operator boundary. The Rust `fleet-loop-controller` runs as `fleet-operator`
-without provider credentials, network access, the cockpit home, or a real
-repository. It persists state under `/var/lib/agents/loops/<id>/` and submits
-ordinary implementation tasks through the same queue.
-
-Context snapshots exclude Git metadata, result links, `.direnv`, and common
-`.env` files, but they are not a general secret scanner. Dispatch only a
-secret-clean directory; credentials, private keys, cloud profiles, and other
-sensitive files under arbitrary names would otherwise enter the guest context.
-
-Each implementation task receives the original sealed context plus the ordered
-accepted patch ledger. The fixed guest launcher materializes both inside a fresh
-VM, creates a baseline, invokes the explicitly selected provider, and returns
-only that iteration's bounded patch. The host stores patch bytes opaquely; it
-does not apply or execute them.
-
-A fresh `agent: verify`, `model: fixed` task receives no provider credential.
-The guest's immutable Rust verifier applies the candidate, or treats an empty
-candidate as an already-complete base, then locks the task exchange before
-running candidate-controlled checks. It checks protected paths, runs
-cockpit-authored argv arrays with individual timeouts, and emits a bounded
-`verification.json`. Admission checks gate whether the candidate enters the
-ledger; empty candidates do not create ledger entries. Completion checks gate
-the terminal `VERIFIED_CANDIDATE` state. The controller validates the result
-schema, candidate digest, and exact sealed check IDs before acting. Reports and
-model-written progress remain advisory input.
-
-Loop specs must explicitly provide `objective`, `implementationRoutes`, all
-seven budgets, non-empty admission and completion check lists, and
-`protectedPaths`. Routes name `agent`, `model`, and optional `effort`/`guidance`;
-the controller has no provider defaults. Iteration, wall-clock, task, token,
-infrastructure-retry, no-progress, and ledger-byte ceilings prevent indefinite
-execution. Missing usage pauses rather than silently bypassing a token budget.
-The guest supervisor locks the task exchange and terminates executor processes
-before producing the archived usage record. The host also requires root ownership
-for task completion, usage, and verifier artifacts, so model-written files cannot
-replace their provenance. The counters still come from provider CLI state under
-the executor's writable home, so `maxTokens` is accounting rather than a
-provider-enforced security boundary; iteration, wall-clock, task-time, and
-ledger-byte limits remain the hard ceilings.
-
-Every repository file that a verification command executes or trusts must be
-listed in `protectedPaths`, including test runners, build definitions, package
-scripts, and configuration loaded by those commands. Otherwise a candidate can
-change the check itself and make a fixed argv report a meaningless success.
-
-```json
-{
-  "objective": "Implement the requested behavior without unrelated changes.",
-  "implementationRoutes": [
-    { "agent": "codex", "model": "gpt-5.6-sol", "effort": "high" }
-  ],
-  "budgets": {
-    "maxIterations": 4,
-    "maxWallSeconds": 21600,
-    "maxTaskSeconds": 3600,
-    "maxTokens": 3000000,
-    "maxInfrastructureRetries": 1,
-    "maxNoProgress": 2,
-    "maxLedgerBytes": 104857600
-  },
-  "checks": {
-    "admission": [
-      { "id": "build", "argv": ["nix", "build", ".#target"], "cwd": ".", "timeoutSeconds": 1800 }
-    ],
-    "completion": [
-      { "id": "feature", "argv": ["./tests/feature.sh"], "cwd": ".", "timeoutSeconds": 600 }
-    ]
-  },
-  "protectedPaths": ["tests/feature.sh"]
-}
-```
-
-Author substantial loops checks-first: use several granular completion checks
-so the no-progress counter has a meaningful signal, then write the objective to
-match. A one-shot planner drone can propose the objective, checks, and protected
-paths, but the cockpit reviews and seals them. Watch the first iteration with
-`guidance: cockpit`; remove guidance after the harness proves itself. Later
-iterations receive bounded prior progress/report tails as explicitly untrusted
-orientation context. Re-test representative loops when a major model changes,
-removing scaffolding that no longer improves measured output.
-
-Loop success never mutates the source repository. `fleet loop export` emits the
-cumulative verified patch for cockpit review and application. Commit remains a
-cockpit action; push and NixOS activation remain explicit captain actions.
 
 ## Scheduling and lifecycle
 
@@ -324,11 +228,6 @@ dispatcher never directly copies an untrusted path with `cp`, `install`, or a
 shell `-f` check. Its Rust bounded-copy primitive opens the source with
 `O_NOFOLLOW`, validates the open descriptor as a bounded regular file, and
 creates a new destination with `O_EXCL` and `O_NOFOLLOW`.
-
-Guidance uses a separate host-owned spool under
-`/var/lib/agents/tasks/guidance`. The root drainer safely transfers a question
-and the original queued prompt into that spool. The advisor never reads or
-writes the live guest share. The drainer safely transfers the answer back.
 
 Completed prompts, reports, logs, patches, and answers are mode `0640` under directories
 mode `0750`, readable only by root and `agent-fleet-readers` (`max` and

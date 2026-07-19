@@ -13,7 +13,9 @@ type Result<T> = std::result::Result<T, String>;
 
 const READY_MAX_AGE: u64 = 60;
 const PROMPT_MAX_BYTES: u64 = 1_048_576;
-const VERIFICATION_MAX_BYTES: u64 = 2_097_152;
+
+const NO_ADVISOR_ANSWER: &[u8] =
+    b"No advisor is configured for this task \xe2\x80\x94 proceed on your own best judgment.\n";
 
 #[derive(Clone, Debug)]
 struct Config {
@@ -30,7 +32,6 @@ struct Config {
     task_timeout: u64,
     exchange_max_bytes: u64,
     context_max_bytes: u64,
-    guidance_model: String,
 }
 
 impl Config {
@@ -51,7 +52,6 @@ impl Config {
             task_timeout: env_u64("FLEET_TASK_TIMEOUT")?,
             exchange_max_bytes: env_u64("FLEET_TASK_EXCHANGE_MAX_BYTES")?,
             context_max_bytes: env_u64("FLEET_TASK_CONTEXT_MAX_BYTES")?,
-            guidance_model: env::var("FLEET_GUIDANCE_MODEL").unwrap_or_default(),
         })
     }
 
@@ -65,10 +65,6 @@ impl Config {
 
     fn rejected(&self) -> PathBuf {
         self.tasks.join("rejected")
-    }
-
-    fn guidance_root(&self) -> PathBuf {
-        self.tasks.join("guidance").join(&self.worker)
     }
 
     fn ready_dir(&self) -> PathBuf {
@@ -97,7 +93,6 @@ enum Agent {
     Claude,
     Codex,
     Opencode,
-    Verify,
 }
 
 impl Agent {
@@ -106,24 +101,6 @@ impl Agent {
             Self::Claude => "claude",
             Self::Codex => "codex",
             Self::Opencode => "opencode",
-            Self::Verify => "verify",
-        }
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-enum TaskKind {
-    Direct,
-    LoopImplement,
-    LoopVerify,
-}
-
-impl TaskKind {
-    fn as_str(&self) -> &str {
-        match self {
-            Self::Direct => "",
-            Self::LoopImplement => "loop-implement",
-            Self::LoopVerify => "loop-verify",
         }
     }
 }
@@ -133,7 +110,6 @@ struct TaskMetadata {
     agent: Agent,
     model: String,
     effort: String,
-    kind: TaskKind,
     guidance: String,
     timeout: u64,
 }
@@ -223,11 +199,6 @@ impl Systemd {
         )
     }
 
-    fn start_guidance(&self) {
-        let _ = Command::new("systemctl")
-            .args(["start", "--no-block", "agent-guidance.service"])
-            .status();
-    }
 }
 
 impl Dispatcher {
@@ -238,7 +209,6 @@ impl Dispatcher {
 
     fn initialize(&self) -> Result<()> {
         ensure_dir(&self.config.running(), 0o755, None)?;
-        ensure_dir(&self.config.guidance_root(), 0o750, Some("root:users"))?;
         ensure_dir(&self.config.ready_dir(), 0o755, Some("root:root"))?;
         self.remove_partial_results()?;
         self.requeue_stranded()
@@ -340,7 +310,6 @@ impl Dispatcher {
     }
 
     fn try_process_task(&self, task: &mut ClaimedTask, start: u64) -> Result<()> {
-        let guidance_task = self.config.guidance_root().join(&task.id);
         let live = self.config.live_root().join(&task.id);
 
         if !self.systemd.active()? || !self.warm_ready() {
@@ -352,7 +321,6 @@ impl Dispatcher {
             return Ok(());
         }
 
-        remove_tree(&guidance_task)?;
         remove_tree(&live)?;
         let pending_cancel = self.pending_cancel(task)?;
         let (metadata, mut rejection) =
@@ -371,7 +339,6 @@ impl Dispatcher {
                 }
             }
         }
-        ensure_dir(&guidance_task, 0o770, Some("root:users"))?;
         ensure_dir(&live, 0o750, Some(&format!("root:{}", self.config.readers)))?;
 
         if let Some(error) = rejection {
@@ -405,19 +372,18 @@ impl Dispatcher {
             ))?;
         }
 
-        let status = self.monitor(task, &metadata, &guidance_task, &live)?;
+        let status = self.monitor(task, &metadata, &live)?;
         self.systemd.stop()?;
         self.reset_creds()?;
 
         if status == TaskStatus::Requeue {
             self.requeue_claim(task, true)?;
             remove_tree(&live)?;
-            remove_tree(&guidance_task)?;
             self.reset_work()?;
             return Ok(());
         }
 
-        self.archive(task, status, start, &live, metadata.agent == Agent::Verify)?;
+        self.archive(task, status, start, &live)?;
         Ok(())
     }
 
@@ -431,11 +397,8 @@ impl Dispatcher {
         }
 
         self.reset_work()?;
-        let guidance_task = self.config.guidance_root().join(&task.id);
         let live = self.config.live_root().join(&task.id);
-        remove_tree(&guidance_task)?;
         remove_tree(&live)?;
-        ensure_dir(&guidance_task, 0o770, Some("root:users"))?;
         ensure_dir(&live, 0o750, Some(&format!("root:{}", self.config.readers)))?;
         write_new(
             &self.config.work.join("report.md"),
@@ -443,14 +406,13 @@ impl Dispatcher {
             0o644,
         )?;
         write_new(&self.config.work.join("exit-code"), b"70\n", 0o644)?;
-        self.archive(task, TaskStatus::InvalidOutput, start, &live, false)
+        self.archive(task, TaskStatus::InvalidOutput, start, &live)
     }
 
     fn monitor(
         &self,
         task: &ClaimedTask,
         metadata: &TaskMetadata,
-        guidance_task: &Path,
         live: &Path,
     ) -> Result<TaskStatus> {
         let hard_deadline = unix_now().saturating_add(metadata.timeout);
@@ -468,18 +430,18 @@ impl Dispatcher {
             }
             let exit_code = self.config.work.join("exit-code");
             if exists_any(&exit_code) {
-                let staged = guidance_task.join("exit-code");
-                if let Err(error) =
-                    self.safe_transfer_owned(&exit_code, &staged, 64, 0o640, Some(0))
-                {
-                    self.log(&format!(
-                        "rejected {} exit-code (unsafe or oversized file): {error}",
-                        task.id
-                    ))?;
-                    return Ok(TaskStatus::InvalidOutput);
+                // Bounded fd-based read: uid and size are checked on the open
+                // descriptor, so the executor cannot race the checks.
+                match read_bounded_owned(&exit_code, 64, Some(0)) {
+                    Ok(value) => return Ok(exit_status(&value)),
+                    Err(error) => {
+                        self.log(&format!(
+                            "rejected {} exit-code (unsafe or oversized file): {error}",
+                            task.id
+                        ))?;
+                        return Ok(TaskStatus::InvalidOutput);
+                    }
                 }
-                let value = fs::read(&staged).context("read staged exit-code")?;
-                return Ok(exit_status(&value));
             }
 
             let heartbeat = mtime(&self.config.work.join(".heartbeat")).unwrap_or(0);
@@ -532,9 +494,8 @@ impl Dispatcher {
             )?;
             self.publish_log_tail(live, &mut last_log_mtime)?;
             self.relay_steering(task, live)?;
-            self.relay_cockpit_answers(task, guidance_task, live)?;
-            self.relay_questions(task, metadata, guidance_task, live, &mut seen_questions)?;
-            self.deliver_guidance_answers(task, guidance_task)?;
+            self.relay_cockpit_answers(task, live)?;
+            self.relay_questions(task, metadata, live, &mut seen_questions)?;
             thread::sleep(Duration::from_secs(10));
         }
     }
@@ -584,11 +545,10 @@ impl Dispatcher {
         let temporary = self.config.creds.join(".task-meta.tmp");
         remove_any(&temporary)?;
         let contents = format!(
-            "agent={}\nmodel={}\neffort={}\nkind={}\n",
+            "agent={}\nmodel={}\neffort={}\n",
             metadata.agent.as_str(),
             metadata.model,
-            metadata.effort,
-            metadata.kind.as_str()
+            metadata.effort
         );
         write_new(&temporary, contents.as_bytes(), 0o400)?;
         chown(&temporary, "root:root")?;
@@ -628,7 +588,6 @@ impl Dispatcher {
         if let Some(context) = context {
             remove_any(context)?;
         }
-        remove_tree(&self.config.guidance_root().join(id))?;
         remove_tree(&self.config.live_root().join(id))?;
         self.remove_task_spool(&self.config.steer_spool(), &format!("{id}.message-"))?;
         self.remove_task_spool(&self.config.answer_spool(), &format!("{id}.answer-"))?;
@@ -864,12 +823,7 @@ impl Dispatcher {
         Ok(())
     }
 
-    fn relay_cockpit_answers(
-        &self,
-        task: &ClaimedTask,
-        guidance_task: &Path,
-        live: &Path,
-    ) -> Result<()> {
+    fn relay_cockpit_answers(&self, task: &ClaimedTask, live: &Path) -> Result<()> {
         let prefix = format!("{}.answer-", task.id);
         for source in prefixed_entries(&self.config.answer_spool(), &prefix, ".md")? {
             let Some(number) = numbered_suffix(&source, &prefix, ".md") else {
@@ -880,14 +834,13 @@ impl Dispatcher {
                 remove_any(&source)?;
                 continue;
             }
-            let answer = guidance_task.join(format!("answer-{number}.md"));
-            if !answer.exists() {
+            let live_answer = live.join(format!("answer-{number}.md"));
+            if !live_answer.exists() {
+                let delivered = self.config.work.join(format!("answer-{number}.md"));
                 if self
-                    .safe_transfer(&source, &answer, 1_048_576, 0o640)
+                    .safe_transfer(&source, &delivered, 1_048_576, 0o644)
                     .is_ok()
                 {
-                    let live_answer = live.join(format!("answer-{number}.md"));
-                    remove_any(&live_answer)?;
                     if self
                         .safe_transfer(&source, &live_answer, 1_048_576, 0o640)
                         .is_ok()
@@ -897,7 +850,7 @@ impl Dispatcher {
                     self.log(&format!("ANSWERED {} question {number} (cockpit)", task.id))?;
                 } else {
                     self.log(&format!(
-                        "rejected {} answer {number} (unsafe or oversized file)",
+                        "rejected {} answer {number} (unsafe spool entry or blocked delivery)",
                         task.id
                     ))?;
                 }
@@ -907,19 +860,17 @@ impl Dispatcher {
         Ok(())
     }
 
+    // `guidance: cockpit` questions surface in the live view for `fleet
+    // answer`; anything else is answered immediately with the stock text —
+    // there is no advisor tier, the cockpit is the only oracle, and an
+    // unattended task is expected to state what is missing and exit.
     fn relay_questions(
         &self,
         task: &ClaimedTask,
         metadata: &TaskMetadata,
-        guidance_task: &Path,
         live: &Path,
         seen: &mut BTreeSet<u32>,
     ) -> Result<()> {
-        let effective_guidance = if metadata.guidance.is_empty() {
-            &self.config.guidance_model
-        } else {
-            &metadata.guidance
-        };
         for source in prefixed_entries(&self.config.work, "question-", ".md")? {
             let Some(number) = numbered_suffix(&source, "question-", ".md") else {
                 continue;
@@ -927,10 +878,10 @@ impl Dispatcher {
             if !(1..=5).contains(&number) {
                 continue;
             }
-            if effective_guidance == "cockpit" {
+            if metadata.guidance == "cockpit" {
                 let live_question = live.join(format!("question-{number}.md"));
-                let answer = guidance_task.join(format!("answer-{number}.md"));
-                if !live_question.exists() && !answer.exists() {
+                let answered = live.join(format!("answer-{number}.md"));
+                if !live_question.exists() && !answered.exists() {
                     let temporary = live.join(format!(".question-{number}.tmp"));
                     remove_any(&temporary)?;
                     if self
@@ -955,65 +906,13 @@ impl Dispatcher {
                 continue;
             }
 
-            let spool_question = guidance_task.join(format!("question-{number}.md"));
-            let answer = guidance_task.join(format!("answer-{number}.md"));
-            if !spool_question.exists() && !answer.exists() {
-                if self
-                    .safe_transfer(&source, &spool_question, 65_536, 0o640)
-                    .is_ok()
-                {
-                    chown(&spool_question, "root:users")?;
-                    let prompt = guidance_task.join("prompt.md");
-                    if !prompt.exists() {
-                        self.safe_transfer(&task.prompt, &prompt, PROMPT_MAX_BYTES, 0o640)?;
-                        chown(&prompt, "root:users")?;
-                    }
-                    let temporary = guidance_task.join("guidance-model.tmp");
-                    write_new_or_replace(
-                        &temporary,
-                        format!("{}\n", metadata.guidance).as_bytes(),
-                        0o640,
-                    )?;
-                    chown(&temporary, "root:users")?;
-                    rename_replace(&temporary, &guidance_task.join("guidance-model"))?;
-                    self.systemd.start_guidance();
-                } else {
-                    self.log(&format!(
-                        "rejected {} question {number} (unsafe or oversized file)",
-                        task.id
-                    ))?;
-                }
-            }
-            if seen.insert(number) {
-                let advisor = match effective_guidance.as_str() {
-                    "" | "none" | "NONE" => "none",
-                    value => value,
-                };
-                self.log(&format!(
-                    "ESCALATE {} question {number} -> {advisor}",
-                    task.id
-                ))?;
-            }
-        }
-        Ok(())
-    }
-
-    fn deliver_guidance_answers(&self, task: &ClaimedTask, guidance_task: &Path) -> Result<()> {
-        for source in prefixed_entries(guidance_task, "answer-", ".md")? {
-            let Some(number) = numbered_suffix(&source, "answer-", ".md") else {
-                continue;
-            };
-            if !(1..=5).contains(&number) {
-                continue;
-            }
-            let destination = self.config.work.join(format!("answer-{number}.md"));
-            if !exists_any(&destination)
-                && self
-                    .safe_transfer(&source, &destination, 1_048_576, 0o644)
-                    .is_err()
+            let answer = self.config.work.join(format!("answer-{number}.md"));
+            if !exists_any(&answer)
+                && write_new(&answer, NO_ADVISOR_ANSWER, 0o644).is_ok()
+                && seen.insert(number)
             {
                 self.log(&format!(
-                    "could not deliver {} answer {number} safely",
+                    "ANSWERED {} question {number} (no advisor)",
                     task.id
                 ))?;
             }
@@ -1027,7 +926,6 @@ impl Dispatcher {
         status: TaskStatus,
         start: u64,
         live: &Path,
-        verify_output: bool,
     ) -> Result<()> {
         let root = if status == TaskStatus::Done {
             self.config.tasks.join("done")
@@ -1080,18 +978,12 @@ impl Dispatcher {
                 self.config.work.join("changes.patch"),
                 "changes.patch",
                 52_428_800,
-                verify_output.then_some(0),
+                None,
             ),
             (
                 self.config.work.join(".trusted/usage.json"),
                 "usage.json",
                 65_536,
-                Some(0),
-            ),
-            (
-                self.config.work.join("verification.json"),
-                "verification.json",
-                VERIFICATION_MAX_BYTES,
                 Some(0),
             ),
         ] {
@@ -1228,7 +1120,6 @@ impl TaskMetadata {
             "claude" => Agent::Claude,
             "codex" => Agent::Codex,
             "opencode" => Agent::Opencode,
-            "verify" => Agent::Verify,
             value => return Err(format!("unsupported agent: {value}")),
         };
         let requested_timeout = fields
@@ -1236,28 +1127,22 @@ impl TaskMetadata {
             .and_then(|value| value.parse::<u64>().ok())
             .filter(|value| (1..=default_timeout).contains(value))
             .unwrap_or(default_timeout);
-        let kind = match token(&fields, "kind")?.as_str() {
-            "" => TaskKind::Direct,
-            "loop-implement" => TaskKind::LoopImplement,
-            "loop-verify" => TaskKind::LoopVerify,
-            value => return Err(format!("unsupported task kind: {value}")),
-        };
         Ok(Self {
             agent,
             model: token(&fields, "model")?,
             effort: token(&fields, "effort")?,
-            kind,
             guidance: token(&fields, "guidance")?,
             timeout: requested_timeout,
         })
     }
 
+    // Placeholder for tasks whose front-matter was rejected: never dispatched,
+    // only the timeout and (empty) guidance are consulted while monitoring.
     fn rejected(timeout: u64) -> Self {
         Self {
-            agent: Agent::Verify,
+            agent: Agent::Claude,
             model: String::new(),
             effort: String::new(),
-            kind: TaskKind::Direct,
             guidance: String::new(),
             timeout,
         }
@@ -1265,22 +1150,16 @@ impl TaskMetadata {
 }
 
 fn select_credential<'a>(config: &'a Config, task: &TaskMetadata) -> Result<Credential<'a>> {
-    match (&task.agent, task.model.as_str(), &task.kind) {
-        (Agent::Claude, model, kind) if !model.is_empty() && implementation_kind(kind) => {
-            Ok(Credential::File {
-                source: &config.claude_token,
-                name: "claude-token",
-            })
-        }
-        (Agent::Codex, model, kind) if !model.is_empty() && implementation_kind(kind) => {
-            Ok(Credential::File {
-                source: &config.codex_auth,
-                name: "codex-auth.json",
-            })
-        }
-        (Agent::Opencode, model, kind)
-            if model.starts_with("openrouter/") && implementation_kind(kind) =>
-        {
+    match (&task.agent, task.model.as_str()) {
+        (Agent::Claude, model) if !model.is_empty() => Ok(Credential::File {
+            source: &config.claude_token,
+            name: "claude-token",
+        }),
+        (Agent::Codex, model) if !model.is_empty() => Ok(Credential::File {
+            source: &config.codex_auth,
+            name: "codex-auth.json",
+        }),
+        (Agent::Opencode, model) if model.starts_with("openrouter/") => {
             let source = config
                 .openrouter_key
                 .as_deref()
@@ -1290,23 +1169,13 @@ fn select_credential<'a>(config: &'a Config, task: &TaskMetadata) -> Result<Cred
                 name: "openrouter-key",
             })
         }
-        (Agent::Opencode, model, kind)
-            if model.starts_with("local/") && implementation_kind(kind) =>
-        {
-            Ok(Credential::None)
-        }
-        (Agent::Verify, "fixed", TaskKind::LoopVerify) => Ok(Credential::None),
+        (Agent::Opencode, model) if model.starts_with("local/") => Ok(Credential::None),
         _ => Err(format!(
-            "unsupported agent/model/kind combination: {}/{}/{}",
+            "unsupported agent/model combination: {}/{}",
             task.agent.as_str(),
-            task.model,
-            task.kind.as_str()
+            task.model
         )),
     }
-}
-
-fn implementation_kind(kind: &TaskKind) -> bool {
-    matches!(kind, TaskKind::Direct | TaskKind::LoopImplement)
 }
 
 fn frontmatter(path: &Path) -> Result<BTreeMap<String, String>> {
@@ -1411,6 +1280,35 @@ fn is_regular_nofollow(path: &Path) -> bool {
     fs::symlink_metadata(path)
         .map(|metadata| metadata.file_type().is_file())
         .unwrap_or(false)
+}
+
+/// Bounded read of a worker-reachable file: O_NOFOLLOW open, then type/size/
+/// owner checks on the descriptor so nothing can be swapped between check and
+/// read.
+fn read_bounded_owned(path: &Path, limit: u64, expected_uid: Option<u32>) -> Result<Vec<u8>> {
+    let input = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
+        .open(path)
+        .with_context(|| format!("open bounded source {}", path.display()))?;
+    let metadata = input
+        .metadata()
+        .with_context(|| format!("inspect bounded source {}", path.display()))?;
+    if !metadata.file_type().is_file()
+        || metadata.len() > limit
+        || expected_uid.is_some_and(|uid| metadata.uid() != uid)
+    {
+        return Err(format!("unsafe or oversized source: {}", path.display()));
+    }
+    let mut bytes = Vec::new();
+    input
+        .take(limit.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .context("read bounded source")?;
+    if bytes.len() as u64 > limit {
+        return Err(format!("source grew beyond {limit} bytes"));
+    }
+    Ok(bytes)
 }
 
 fn regular_bounded(path: &Path, limit: u64) -> bool {
@@ -1783,7 +1681,6 @@ impl Fixture {
             task_timeout: 21_600,
             exchange_max_bytes: 1024,
             context_max_bytes: 1024,
-            guidance_model: String::new(),
         })
     }
 }
@@ -1803,7 +1700,7 @@ fn self_test() -> Result<()> {
     let prompt = config.queue().join("stable-key.md");
     fs::write(
         &prompt,
-        "---\nagent: codex\nmodel: gpt-5\nkind: loop-implement\ntimeout: 30\n---\nwork\n",
+        "---\nagent: codex\nmodel: gpt-5\ntimeout: 30\n---\nwork\n",
     )
     .context("write claim fixture")?;
     fs::write(
@@ -1842,17 +1739,11 @@ fn self_test() -> Result<()> {
     let verify_prompt = fixture.root.join("verify.md");
     fs::write(
         &verify_prompt,
-        "---\nagent: verify\nmodel: fixed\nkind: loop-verify\n---\nverify\n",
+        "---\nagent: verify\nmodel: fixed\n---\nverify\n",
     )
     .context("write verifier fixture")?;
-    let verify = TaskMetadata::read(&verify_prompt, config.task_timeout)?;
-    if !matches!(select_credential(&config, &verify)?, Credential::None) {
-        return Err("fixed verifier unexpectedly selected a credential".into());
-    }
-    let mut invalid_verify = verify;
-    invalid_verify.kind = TaskKind::LoopImplement;
-    if select_credential(&config, &invalid_verify).is_ok() {
-        return Err("incompatible verifier kind was accepted".into());
+    if TaskMetadata::read(&verify_prompt, config.task_timeout).is_ok() {
+        return Err("retired loop-era verify agent was accepted".into());
     }
 
     if deadline_decision(120, 0, 0, 120, 1000, false) != Some(TaskStatus::Requeue)
@@ -1963,11 +1854,44 @@ mod tests {
             agent: Agent::Opencode,
             model: "other/model".into(),
             effort: String::new(),
-            kind: TaskKind::Direct,
             guidance: String::new(),
             timeout: 1,
         };
         assert!(select_credential(&config, &invalid).is_err());
+    }
+
+    #[test]
+    fn questions_route_to_cockpit_or_get_the_stock_answer() {
+        let fixture = Fixture::new().unwrap();
+        let config = fixture.config().unwrap();
+        let dispatcher = Dispatcher::new(config.clone());
+        let live = config.live_root().join("job");
+        fs::create_dir_all(&live).unwrap();
+        fs::write(config.work.join("question-1.md"), "stuck on X").unwrap();
+        let task = ClaimedTask {
+            id: "job".into(),
+            prompt: config.work.join("question-1.md"),
+            context: None,
+        };
+        let mut seen = BTreeSet::new();
+
+        // No cockpit routing: the stock answer lands in the exchange at once,
+        // and nothing surfaces in the live view. (The cockpit branch chowns
+        // to root, so it is exercised in production, not here.)
+        let metadata = TaskMetadata::rejected(60);
+        dispatcher
+            .relay_questions(&task, &metadata, &live, &mut seen)
+            .unwrap();
+        assert_eq!(
+            fs::read(config.work.join("answer-1.md")).unwrap(),
+            NO_ADVISOR_ANSWER
+        );
+        assert!(!live.join("question-1.md").exists());
+        // Idempotent: a second pass neither rewrites nor re-logs.
+        dispatcher
+            .relay_questions(&task, &metadata, &live, &mut seen)
+            .unwrap();
+        assert!(seen.contains(&1));
     }
 
     #[test]

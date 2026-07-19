@@ -1,10 +1,10 @@
 // The `fleet` dispatch tool. See fleet-tool.mod.nix for the security model:
 // this binary lives in the read-only nix store and is the only path from the
 // cockpit account into the operator-owned task queue (via a scoped sudo rule).
-// Mutating subcommands run as the operator; `dispatch`/`loop create` run as
-// the caller to snapshot caller-readable context, then cross the same sudo
-// boundary with the capsule on stdin so the operator side never opens a
-// caller-supplied path.
+// Mutating subcommands run as the operator; `dispatch` runs as the caller to
+// snapshot caller-readable context, then crosses the same sudo boundary with
+// the capsule on stdin so the operator side never opens a caller-supplied
+// path.
 //
 // Deployment configuration is baked in at build time (option_env!), like the
 // @VAR@ substitution the bash predecessor used: a caller's environment must
@@ -34,7 +34,6 @@ const fn build_default(value: Option<&'static str>, default: &'static str) -> &'
 }
 
 const TASKS_DIR: &str = build_default(option_env!("FLEET_TASKS_DIR"), "/var/lib/agents/tasks");
-const LOOPS_DIR: &str = build_default(option_env!("FLEET_LOOPS_DIR"), "/var/lib/agents/loops");
 const CONTEXT_MAX_BYTES: &str = build_default(option_env!("FLEET_CONTEXT_MAX_BYTES"), "536870912");
 const TASK_TIMEOUT: &str = build_default(option_env!("FLEET_TASK_TIMEOUT"), "21600");
 const OPERATOR: &str = build_default(option_env!("FLEET_OPERATOR"), "fleet-operator");
@@ -47,7 +46,6 @@ const TAR: &str = build_default(option_env!("FLEET_TAR"), "tar");
 const ZSTD: &str = build_default(option_env!("FLEET_ZSTD"), "zstd");
 const SYSTEMCTL: &str = build_default(option_env!("FLEET_SYSTEMCTL"), "systemctl");
 const SUDO: &str = "/run/wrappers/bin/sudo";
-const LOOPCTL: &str = "/run/current-system/sw/bin/fleet-loop-engine";
 
 #[derive(Clone, Debug)]
 struct Config {
@@ -439,48 +437,25 @@ struct PromptMeta {
     task_key: String,
 }
 
-/// Validate a prompt the way `submit`/`submit-capsule` do. `verify_allowed`
-/// distinguishes the capsule path (loop tasks) from plain submit.
-fn validate_prompt(config: &Config, path: &Path, verify_allowed: bool) -> Result<PromptMeta> {
+/// Validate a prompt the way `submit`/`submit-capsule` do.
+fn validate_prompt(config: &Config, path: &Path) -> Result<PromptMeta> {
     let header = frontmatter_lines(path)?;
     let agent = san(&fm(&header, "agent"))?.to_string();
     match agent.as_str() {
         "claude" | "codex" | "opencode" => {}
-        "verify" if verify_allowed => {}
-        "" if verify_allowed => return Err("agent not specified in front-matter".into()),
         "" => {
             return Err("agent not specified in front-matter (agent: claude|codex|opencode)".into());
-        }
-        other if verify_allowed => {
-            return Err(format!("unknown agent: {other} (known: claude|codex|opencode|verify)"));
         }
         other => return Err(format!("unknown agent: {other} (known: claude|codex|opencode)")),
     }
     let model = san(&fm(&header, "model"))?.to_string();
     if model.is_empty() {
-        return Err(if verify_allowed {
-            "model not specified in front-matter".into()
-        } else {
-            "model not specified in front-matter (model: <model-id>)".to_string()
-        });
+        return Err("model not specified in front-matter (model: <model-id>)".into());
     }
     if agent == "opencode" && !(model.starts_with("local/") || model.starts_with("openrouter/")) {
         return Err("opencode model must start with local/ or openrouter/".into());
     }
-    if verify_allowed && agent == "verify" && model != "fixed" {
-        return Err("verify tasks require model: fixed".into());
-    }
     let guidance = san(&fm(&header, "guidance"))?.to_string();
-    if verify_allowed {
-        let kind = san(&fm(&header, "kind"))?.to_string();
-        match (agent.as_str(), kind.as_str()) {
-            ("verify", "loop-verify") => {}
-            ("claude" | "codex" | "opencode", "loop-implement") => {}
-            ("verify", _) => return Err("verify tasks require kind: loop-verify".into()),
-            (_, "") => {}
-            (_, kind) => return Err(format!("unknown or incompatible task kind: {kind}")),
-        }
-    }
     validate_timeout(config, &fm(&header, "timeout"))?;
     let task_key = fm(&header, "task-key");
     if !task_key.is_empty() && !valid_id(&task_key) {
@@ -572,7 +547,7 @@ fn systemctl_active(unit: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Pack a context directory the way `dispatch`/`loop create` did: zstd tar,
+/// Pack a context directory the way `dispatch` does: zstd tar,
 /// secrets and build litter excluded, size-capped.
 fn pack_context(config: &Config, context_dir: &Path, archive: &Path) -> Result<()> {
     if !is_dir_nofollow(context_dir) {
@@ -655,26 +630,6 @@ fn sudo_operator_stdin(subcommand: &str, arguments: &[&str], stdin: &Path) -> Re
     )
 }
 
-fn loopctl_available() -> bool {
-    fs::metadata(LOOPCTL)
-        .map(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
-        .unwrap_or(false)
-}
-
-fn loopctl_command(config: &Config) -> Result<Command> {
-    if !loopctl_available() {
-        return Err("fleet looping is not enabled on this host".into());
-    }
-    let mut command = Command::new(LOOPCTL);
-    command
-        .env("FLEET_TASKS_DIR", &config.tasks)
-        .env("FLEET_LOOPS_DIR", LOOPS_DIR)
-        .env("FLEET_BIN", FLEET_PATH)
-        .env("FLEET_CONTEXT_MAX", config.context_max_bytes.to_string())
-        .env("FLEET_TASK_TIMEOUT", config.task_timeout.to_string());
-    Ok(command)
-}
-
 // ---- subcommands -----------------------------------------------------------
 
 fn submit_impl(config: &Config, slug: &str) -> Result<String> {
@@ -684,7 +639,7 @@ fn submit_impl(config: &Config, slug: &str) -> Result<String> {
     if file_size(&stage.0)? == 0 {
         return Err("empty prompt on stdin".into());
     }
-    let meta = validate_prompt(config, &stage.0, false)?;
+    let meta = validate_prompt(config, &stage.0)?;
     if !meta.task_key.is_empty() && task_exists(config, &meta.task_key) {
         return Ok(meta.task_key);
     }
@@ -776,7 +731,7 @@ fn cmd_submit_capsule(config: &Config, arguments: &[String]) -> Result<i32> {
         return Err("context too large".into());
     }
 
-    let meta = validate_prompt(config, &prompt, true)?;
+    let meta = validate_prompt(config, &prompt)?;
     if !meta.task_key.is_empty() {
         if task_exists(config, &meta.task_key) {
             println!("{}", meta.task_key);
@@ -854,88 +809,6 @@ fn cmd_dispatch(config: &Config, arguments: &[String]) -> Result<i32> {
         "pack capsule",
     )?;
     sudo_operator_stdin("submit-capsule", &[slug], &temp.0.join("capsule.tar"))
-}
-
-fn cmd_loop_create(config: &Config, arguments: &[String]) -> Result<i32> {
-    let [slug, spec, context_dir] = arguments else {
-        return Err("usage: fleet loop create <slug> <spec.json> <context-dir>".into());
-    };
-    if !valid_slug(slug) {
-        return Err("loop slug must match [a-z0-9][a-z0-9-]{0,40}".into());
-    }
-    if !is_regular_nofollow(Path::new(spec)) {
-        return Err("loop spec must be a regular file".into());
-    }
-    if file_size(Path::new(spec))? > 1_048_576 {
-        return Err("loop spec too large (>1MiB)".into());
-    }
-    let temp = TempDir::create(&env::temp_dir(), "fleet-loop")?;
-    fs::copy(spec, temp.0.join("spec.json")).context("stage loop spec")?;
-    fs::set_permissions(temp.0.join("spec.json"), fs::Permissions::from_mode(0o600))
-        .context("restrict staged spec")?;
-    pack_context(config, Path::new(context_dir), &temp.0.join("base.context.tar.zst"))?;
-    require_success(
-        Command::new(TAR)
-            .arg("--create")
-            .arg("--file")
-            .arg(temp.0.join("loop-capsule.tar"))
-            .arg("--directory")
-            .arg(&temp.0)
-            .args(["spec.json", "base.context.tar.zst"]),
-        "pack loop capsule",
-    )?;
-    sudo_operator_stdin("loop-create-capsule", &[slug], &temp.0.join("loop-capsule.tar"))
-}
-
-fn cmd_loop(config: &Config, arguments: &[String]) -> Result<i32> {
-    let action = arguments.first().map(String::as_str).unwrap_or("");
-    let rest = arguments.get(1..).unwrap_or_default();
-    let one_id = |usage: &str| -> Result<&String> {
-        match rest {
-            [id] => Ok(id),
-            _ => Err(usage.into()),
-        }
-    };
-    match action {
-        "create" => cmd_loop_create(config, rest),
-        "list" => {
-            if !rest.is_empty() {
-                return Err("usage: fleet loop list".into());
-            }
-            command_status(loopctl_command(config)?.arg("list"), "fleet-loop-engine")
-        }
-        "status" => {
-            let id = one_id("usage: fleet loop status <id>")?;
-            command_status(
-                loopctl_command(config)?.args(["status", id]),
-                "fleet-loop-engine",
-            )
-        }
-        "export" => {
-            let id = one_id("usage: fleet loop export <id>")?;
-            command_status(
-                loopctl_command(config)?.args(["export", id]),
-                "fleet-loop-engine",
-            )
-        }
-        "pause" | "resume" | "cancel" => {
-            let id = one_id(&format!("usage: fleet loop {action} <id>"))?;
-            command_status(
-                Command::new(SUDO).args(["-n", "-u", OPERATOR, FLEET_PATH, "loop-control", action, id]),
-                "sudo fleet loop-control",
-            )
-        }
-        _ => Err("usage: fleet loop {create <slug> <spec.json> <context-dir>|list|status <id>|pause <id>|resume <id>|cancel <id>|export <id>}".into()),
-    }
-}
-
-fn cmd_loop_control(config: &Config, arguments: &[String]) -> Result<i32> {
-    match arguments {
-        [action, id] if matches!(action.as_str(), "pause" | "resume" | "cancel") => {
-            command_status(loopctl_command(config)?.args([action, id]), "fleet-loop-engine")
-        }
-        _ => Err("invalid internal loop control action".into()),
-    }
 }
 
 fn require_id<'a>(arguments: &'a [String], usage: &str) -> Result<&'a String> {
@@ -1320,25 +1193,6 @@ fn cmd_health(config: &Config) -> Result<i32> {
         }
     }
 
-    let mut loops = (0usize, 0usize, 0usize, 0usize); // total, active, paused, verified
-    if loopctl_available() {
-        if let Ok(listing) = loopctl_command(config)
-            .and_then(|mut command| command_stdout(command.arg("list"), "fleet-loop-engine list"))
-        {
-            for line in listing.lines().filter(|line| !line.is_empty()) {
-                loops.0 += 1;
-                let state = line.split('\t').nth(1).unwrap_or("");
-                if state.starts_with("PAUSED_") {
-                    loops.2 += 1;
-                } else if state == "VERIFIED_CANDIDATE" {
-                    loops.3 += 1;
-                } else if !matches!(state, "EXHAUSTED" | "CANCELLED" | "FAILED_POLICY") {
-                    loops.1 += 1;
-                }
-            }
-        }
-    }
-
     let failed_units = command_stdout(
         Command::new(SYSTEMCTL).args(["--failed", "--no-legend", "--no-pager"]),
         "systemctl --failed",
@@ -1362,10 +1216,6 @@ fn cmd_health(config: &Config) -> Result<i32> {
     println!(
         "fleet warm={warm}/{count} drainers={drainers}/{count} failed-units={failed_units}",
         count = config.workers.len()
-    );
-    println!(
-        "loops total={} active={} paused={} verified={}",
-        loops.0, loops.1, loops.2, loops.3
     );
     println!(
         "resources agents-memory-bytes={memory} disk-use={}",
@@ -1405,7 +1255,7 @@ fn cmd_note(config: &Config, arguments: &[String]) -> Result<i32> {
     Ok(0)
 }
 
-const USAGE: &str = "usage: fleet {dispatch <slug> <prompt.md> <context-dir>|loop <action>|submit [slug] <prompt.md|watch <id>|fetch <id>|logs <id>|patch <id>|peek <id>|steer <id> [msg]|answer <id> <n> [text]|cancel <id>|run [slug] <prompt.md|status [n]|active|health|note [id] <text>}";
+const USAGE: &str = "usage: fleet {dispatch <slug> <prompt.md> <context-dir>|submit [slug] <prompt.md|watch <id>|fetch <id>|logs <id>|patch <id>|peek <id>|steer <id> [msg]|answer <id> <n> [text]|cancel <id>|run [slug] <prompt.md|status [n]|active|health|note [id] <text>}";
 
 fn run() -> Result<i32> {
     let config = Config::from_build()?;
@@ -1415,13 +1265,7 @@ fn run() -> Result<i32> {
     match subcommand {
         "submit" => cmd_submit(&config, rest),
         "submit-capsule" => cmd_submit_capsule(&config, rest),
-        "loop-create-capsule" => match rest {
-            [slug] => command_status(loopctl_command(&config)?.args(["create", slug]), "fleet-loop-engine"),
-            _ => Err("usage: fleet loop-create-capsule <slug>".into()),
-        },
-        "loop-control" => cmd_loop_control(&config, rest),
         "dispatch" => cmd_dispatch(&config, rest),
-        "loop" => cmd_loop(&config, rest),
         "watch" => cmd_watch(&config, rest),
         "fetch" => cmd_fetch(&config, rest),
         "logs" => cmd_logs(&config, rest),
@@ -1526,40 +1370,34 @@ mod tests {
             "good.md",
             "---\nagent: claude\nmodel: opus\nguidance: cockpit\ntimeout: 60\n---\nbody\n",
         );
-        let meta = validate_prompt(&fixture.config, &good, false).unwrap();
+        let meta = validate_prompt(&fixture.config, &good).unwrap();
         assert_eq!(meta.agent, "claude");
         assert_eq!(meta.model, "opus");
         assert_eq!(meta.guidance, "cockpit");
 
         let unclosed = write_prompt(&fixture, "unclosed.md", "---\nagent: claude\nbody\n");
-        assert!(validate_prompt(&fixture.config, &unclosed, false).is_err());
+        assert!(validate_prompt(&fixture.config, &unclosed).is_err());
         let unknown = write_prompt(&fixture, "unknown.md", "---\nagent: gemini\nmodel: x\n---\n");
-        assert!(validate_prompt(&fixture.config, &unknown, false).is_err());
+        assert!(validate_prompt(&fixture.config, &unknown).is_err());
+        // The loop-era verify agent is no longer a thing anywhere.
         let verify = write_prompt(
             &fixture,
             "verify.md",
-            "---\nagent: verify\nmodel: fixed\nkind: loop-verify\n---\n",
+            "---\nagent: verify\nmodel: fixed\n---\n",
         );
-        assert!(validate_prompt(&fixture.config, &verify, false).is_err());
-        assert!(validate_prompt(&fixture.config, &verify, true).is_ok());
-        let badkind = write_prompt(
-            &fixture,
-            "badkind.md",
-            "---\nagent: claude\nmodel: opus\nkind: loop-verify\n---\n",
-        );
-        assert!(validate_prompt(&fixture.config, &badkind, true).is_err());
+        assert!(validate_prompt(&fixture.config, &verify).is_err());
         let opencode = write_prompt(
             &fixture,
             "opencode.md",
             "---\nagent: opencode\nmodel: other/x\n---\n",
         );
-        assert!(validate_prompt(&fixture.config, &opencode, false).is_err());
+        assert!(validate_prompt(&fixture.config, &opencode).is_err());
         let toolong = write_prompt(
             &fixture,
             "timeout.md",
             "---\nagent: claude\nmodel: opus\ntimeout: 999999999\n---\n",
         );
-        assert!(validate_prompt(&fixture.config, &toolong, false).is_err());
+        assert!(validate_prompt(&fixture.config, &toolong).is_err());
     }
 
     #[test]

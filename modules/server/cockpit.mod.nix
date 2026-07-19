@@ -50,7 +50,6 @@
       claudeBashPermissions = [
         "sudo -n -u fleet-operator fleet *"
         "fleet dispatch *"
-        "fleet loop create *"
         "ship-status"
         "nix build *"
         "nix eval *"

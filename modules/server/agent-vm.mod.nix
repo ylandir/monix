@@ -55,7 +55,6 @@
       hintFile = pkgs.writeText "worker-hint.md" (guide.system + guide.worker);
 
       cfg = config.agentFleet;
-      fleetLoopEngine = import ../../lib/fleet-loop-package.nix { inherit pkgs; };
 
       topology = import ../../lib/fleet-topology.nix;
       inherit (topology) hostAddr;
@@ -146,9 +145,11 @@
             { pkgs, ... }:
             let
               # Mid-task escalation: writes a question into the task share and
-              # blocks until the host's guidance service (agent-dispatch.mod.nix)
-              # answers it with a stronger model. Capped per task so a confused
-              # agent can't burn the cockpit's quota in a loop.
+              # blocks until an answer arrives. Only `guidance: cockpit` tasks
+              # get a real answerer (the live cockpit via `fleet answer`); any
+              # other task receives the drainer's immediate stock answer —
+              # there is no advisor tier. Capped per task so a confused agent
+              # can't loop on questions.
               askCockpit = pkgs.writeShellApplication {
                 name = "ask-cockpit";
                 text = ''
@@ -212,8 +213,6 @@
                   exec ${getExe pkgs.opencode} "$@"
                 '';
               };
-
-              verifyRunner = getExe fleetLoopEngine;
 
               # The guest task supervisor (modules/server/agent-vm/): the
               # Rust replacement for the previous embedded Bash script. All
@@ -454,7 +453,6 @@
                     "FLEET_GUEST_EXEC_CODEX=${getExe codexExecutor}"
                     "FLEET_GUEST_EXEC_OPENCODE=${getExe opencodeExecutor}"
                     "FLEET_GUEST_EXEC_LOCAL=${getExe localExecutor}"
-                    "FLEET_GUEST_EXEC_VERIFY=${verifyRunner}"
                   ];
                   # Defense in depth alongside the host's aggregate exchange
                   # budget: no single guest-created file may grow unbounded.
@@ -497,11 +495,6 @@
                   isNormalUser = true;
                   homeMode = "0700";
                   description = "credentialless local-model fleet executor";
-                };
-                agent-verify = {
-                  isNormalUser = true;
-                  homeMode = "0700";
-                  description = "credentialless deterministic fleet verifier";
                 };
               };
               systemd.tmpfiles.rules = singleton "d /workspace 0770 root users -";

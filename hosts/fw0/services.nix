@@ -10,7 +10,6 @@
   # Agent-fleet microVM host. Brings up the host-only bridge +
   # egress proxy + microvm.nix runner (see microvm-host.mod.nix).
   agentFleet.enable = true;
-  agentFleet.loops.enable = true;
 
   # Matrix alerting (alerts.mod.nix): unit failures and the 6-hourly
   # sweep post to the Ship Alerts room on the local tuwunel as @alertbot.

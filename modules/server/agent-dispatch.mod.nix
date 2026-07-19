@@ -89,7 +89,6 @@
             FLEET_TASK_TIMEOUT = toString cfg.taskTimeout;
             FLEET_TASK_EXCHANGE_MAX_BYTES = toString cfg.taskExchangeMaxBytes;
             FLEET_TASK_CONTEXT_MAX_BYTES = toString cfg.taskContextMaxBytes;
-            FLEET_GUIDANCE_MODEL = cfg.guidanceModel;
           };
         };
     in
@@ -122,21 +121,6 @@
         type = types.int;
         default = 536870912;
         description = "maximum compressed context capsule bytes accepted for one task";
-      };
-
-      options.agentFleet.guidanceModel = mkOption {
-        type = types.str;
-        default = "";
-        description = ''
-          Optional fleet-wide default advisor model for ask-cockpit escalations.
-          Empty (the default) means there is no default: tasks name their own
-          advisor via front-matter `guidance:`, and a task with `guidance: none`
-          or no `guidance:` line gets no advisor (escalations are answered
-          immediately with "use your own judgment"). A per-task `guidance:`
-          always overrides this. The special value `cockpit` routes escalations
-          to the live cockpit instead of a model: the question is published to
-          the task's live view and answered via `fleet answer`.
-        '';
       };
 
       config = mkIf (cfg.enable && cfg.workers != [ ]) {
@@ -176,32 +160,8 @@
               touch ${tasksDir}/.permissions-v1
             '';
           };
-
-          agent-guidance = {
-            description = "Answer workers' ask-cockpit questions";
-            path = [ pkgs.claude-code ];
-            serviceConfig = {
-              Type = "oneshot";
-              User = config.primaryUser;
-              Group = "users";
-              Slice = "agents.slice";
-              ExecStart = "${agentDispatcher}/bin/agent-guidance";
-            };
-            environment = {
-              FLEET_TASKS_DIR = tasksDir;
-              FLEET_GUIDANCE_MODEL = cfg.guidanceModel;
-            };
-          };
         }
         // listToAttrs (map (w: nameValuePair "agent-dispatch-${w.name}" (drainerFor w.name)) cfg.workers);
-        systemd.paths.agent-guidance = {
-          description = "Watch for fleet guidance questions";
-          wantedBy = [ "multi-user.target" ];
-          pathConfig = {
-            PathExistsGlob = "${tasksDir}/guidance/*/*/question-*.md";
-            Unit = "agent-guidance.service";
-          };
-        };
       };
     };
 }

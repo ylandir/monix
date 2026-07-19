@@ -165,8 +165,8 @@ flowchart TD
 </details>
 
 The full decision tree — dispatch routing, the worker VM lifecycle with all
-failure paths, every mid-task interaction (live peek, steering, escalation
-with three advisor backends), and the results flow — is in
+failure paths, every mid-task interaction (live peek, steering, cockpit
+escalation), and the results flow — is in
 [fleet-flow.md](fleet-flow.md).
 
 ## Optional AI services

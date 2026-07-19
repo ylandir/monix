@@ -55,7 +55,6 @@ struct Config {
     exec_codex: PathBuf,
     exec_opencode: PathBuf,
     exec_local: PathBuf,
-    exec_verify: PathBuf,
 }
 
 impl Config {
@@ -70,7 +69,6 @@ impl Config {
             exec_codex: env_path("FLEET_GUEST_EXEC_CODEX")?,
             exec_opencode: env_path("FLEET_GUEST_EXEC_OPENCODE")?,
             exec_local: env_path("FLEET_GUEST_EXEC_LOCAL")?,
-            exec_verify: env_path("FLEET_GUEST_EXEC_VERIFY")?,
         })
     }
 
@@ -87,7 +85,6 @@ struct TaskMeta {
     agent: String,
     model: String,
     effort: String,
-    kind: String,
 }
 
 fn parse_task_meta(text: &str) -> Result<TaskMeta> {
@@ -99,7 +96,7 @@ fn parse_task_meta(text: &str) -> Result<TaskMeta> {
         let (key, value) = line
             .split_once('=')
             .ok_or_else(|| format!("malformed task-meta line: {line}"))?;
-        if !matches!(key, "agent" | "model" | "effort" | "kind") {
+        if !matches!(key, "agent" | "model" | "effort") {
             return Err(format!("unexpected task-meta key: {key}"));
         }
         if !valid_token(value) {
@@ -110,16 +107,11 @@ fn parse_task_meta(text: &str) -> Result<TaskMeta> {
         }
     }
     let field = |name: &str| fields.get(name).cloned().unwrap_or_default();
-    let meta = TaskMeta {
+    Ok(TaskMeta {
         agent: field("agent"),
         model: field("model"),
         effort: field("effort"),
-        kind: field("kind"),
-    };
-    if !matches!(meta.kind.as_str(), "" | "loop-implement" | "loop-verify") {
-        return Err(format!("unsupported task kind: {}", meta.kind));
-    }
-    Ok(meta)
+    })
 }
 
 fn valid_token(value: &str) -> bool {
@@ -137,7 +129,6 @@ enum ExecutorKind {
     Codex,
     Opencode,
     Local,
-    Verify,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -160,7 +151,6 @@ fn select_executor(agent: &str, model: &str) -> Option<Executor> {
             "agent-opencode",
             "/home/agent-opencode",
         ),
-        "verify" => executor(ExecutorKind::Verify, "agent-verify", "/home/agent-verify"),
         _ => None,
     }
 }
@@ -182,7 +172,6 @@ fn credential_rule(agent: &str, model: &str) -> CredentialRule {
             CredentialRule::Exactly("openrouter-key")
         }
         ("opencode", model) if model.starts_with("local/") => CredentialRule::None,
-        ("verify", "fixed") => CredentialRule::None,
         _ => CredentialRule::Invalid,
     }
 }
@@ -204,19 +193,6 @@ fn credentials_match(entries: &[CredentialEntry], rule: CredentialRule) -> bool 
         CredentialRule::None => entries.is_empty(),
         CredentialRule::Invalid => false,
     }
-}
-
-// Loop wrapper compatibility: the manifest mode must agree with the
-// host-canonical agent and kind before any base archive is unpacked.
-fn loop_mode_compatible(mode: &str, agent: &str, kind: &str) -> bool {
-    matches!(
-        (mode, agent, kind),
-        (
-            "implement",
-            "claude" | "codex" | "opencode",
-            "loop-implement"
-        ) | ("verify", "verify", "loop-verify")
-    )
 }
 
 // Strip a leading front-matter block exactly like the previous awk program:
@@ -268,14 +244,9 @@ enum FinalStep {
     PublishExitCode,
 }
 
-fn final_steps(
-    is_verify: bool,
-    has_user: bool,
-    has_baseline: bool,
-    git_present: bool,
-) -> Vec<FinalStep> {
+fn final_steps(has_user: bool, has_baseline: bool, git_present: bool) -> Vec<FinalStep> {
     let mut steps = Vec::new();
-    if !is_verify && has_user && has_baseline && git_present {
+    if has_user && has_baseline && git_present {
         steps.push(FinalStep::CapturePatch);
     }
     steps.push(FinalStep::LockExchange);
@@ -288,12 +259,6 @@ fn final_steps(
     }
     steps.push(FinalStep::PublishExitCode);
     steps
-}
-
-// Candidate-controlled verifier checks must never write authoritative task
-// artifacts: the exchange is locked down BEFORE the verifier runs.
-fn lockdown_before_execution(agent: &str) -> bool {
-    agent == "verify"
 }
 
 // Task outcome and its published exit code. 64/65/66 match the previous
@@ -785,21 +750,16 @@ fn extract_usage(executor: &Executor) -> Option<String> {
         ExecutorKind::Claude => claude_usage(home, Some(executor)),
         ExecutorKind::Codex => codex_usage(home, Some(executor)),
         ExecutorKind::Opencode | ExecutorKind::Local => opencode_usage(home, Some(executor)),
-        ExecutorKind::Verify => None,
     }
 }
 
 // ---------------------------------------------------------------------------
 // Context preparation. The capsule is an opaque cockpit-built archive,
-// extracted only here, as the selected unprivileged user. Loop tasks carry a
-// wrapper: sealed base archive plus an ordered patch ledger, materialized
-// only in this disposable VM.
+// extracted only here, as the selected unprivileged user.
 
 #[derive(Clone, Debug, Default)]
 struct ContextInfo {
     baseline: String,
-    loop_manifest: Option<PathBuf>,
-    loop_candidate: Option<PathBuf>,
 }
 
 struct Supervisor {
@@ -807,12 +767,7 @@ struct Supervisor {
 }
 
 impl Supervisor {
-    fn prepare_context(
-        &self,
-        executor: &Executor,
-        meta: &TaskMeta,
-        log: &mut String,
-    ) -> Result<ContextInfo> {
+    fn prepare_context(&self, executor: &Executor, log: &mut String) -> Result<ContextInfo> {
         let config = &self.config;
         let user = executor.user;
         let owner = format!("{user}:users");
@@ -836,55 +791,15 @@ impl Supervisor {
         )?;
 
         let mut info = ContextInfo::default();
-        let loop_dir = config.context_root.join(".fleet-loop");
-        let loop_mode = if meta.kind == "loop-implement" || meta.kind == "loop-verify" {
-            let manifest = loop_dir.join("manifest.json");
-            let base_archive = loop_dir.join("base.context.tar.zst");
-            if !is_regular_nofollow(&manifest) || !is_regular_nofollow(&base_archive) {
-                return Err("loop wrapper manifest or base archive is unsafe".into());
-            }
-            let mode = run_captured(
-                Command::new("jq")
-                    .args(["-r", ".mode // empty"])
-                    .arg(&manifest),
-                log,
-            )?
-            .trim_end()
-            .to_string();
-            if !loop_mode_compatible(&mode, &meta.agent, &meta.kind) {
-                return Err(format!(
-                    "loop mode {mode} is incompatible with {}/{}",
-                    meta.agent, meta.kind
-                ));
-            }
-            info.loop_manifest = Some(manifest);
-            run_logged(
-                runuser_command(user, executor.home)
-                    .args(["tar", "--extract", "--zstd", "--strip-components=1"])
-                    .args([
-                        "--no-same-owner",
-                        "--no-same-permissions",
-                        "--no-overwrite-dir",
-                    ])
-                    .arg("--directory")
-                    .arg(&config.workspace)
-                    .arg("--file")
-                    .arg(&base_archive),
-                log,
-            )?;
-            mode
-        } else {
-            let mut source = config.context_root.as_os_str().to_os_string();
-            source.push("/.");
-            run_logged(
-                runuser_command(user, executor.home)
-                    .args(["cp", "-a"])
-                    .arg(source)
-                    .arg(&config.workspace),
-                log,
-            )?;
-            "standard".to_string()
-        };
+        let mut source = config.context_root.as_os_str().to_os_string();
+        source.push("/.");
+        run_logged(
+            runuser_command(user, executor.home)
+                .args(["cp", "-a"])
+                .arg(source)
+                .arg(&config.workspace),
+            log,
+        )?;
 
         let git = |args: &[&str]| {
             let mut command = runuser_command(user, executor.home);
@@ -915,53 +830,6 @@ impl Supervisor {
         info.baseline = run_captured(&mut git(&["rev-parse", "HEAD"]), log)?
             .trim_end()
             .to_string();
-
-        if loop_mode != "standard" {
-            // Symlinks or other non-regular entries hidden among the patches
-            // are a wrapper-integrity failure, not something to skip.
-            let mut patches = Vec::new();
-            if let Ok(entries) = fs::read_dir(loop_dir.join("patches")) {
-                for entry in entries.flatten() {
-                    let name = entry.file_name();
-                    let name = name.to_string_lossy();
-                    if name.starts_with('.') || !name.ends_with(".patch") {
-                        continue;
-                    }
-                    if !is_regular_nofollow(&entry.path()) {
-                        return Err(format!("unsafe loop patch entry: {name}"));
-                    }
-                    patches.push(entry.path());
-                }
-            }
-            patches.sort();
-            for patch in &patches {
-                run_logged(git(&["apply", "--index", "--binary"]).arg(patch), log)?;
-                let name = patch
-                    .file_name()
-                    .map(|name| name.to_string_lossy().into_owned())
-                    .unwrap_or_default();
-                run_logged(
-                    &mut git(&[
-                        "commit",
-                        "--quiet",
-                        "-m",
-                        &format!("fleet loop accepted {name}"),
-                    ]),
-                    log,
-                )?;
-            }
-            if loop_mode == "implement" {
-                info.baseline = run_captured(&mut git(&["rev-parse", "HEAD"]), log)?
-                    .trim_end()
-                    .to_string();
-            } else {
-                let candidate = loop_dir.join("candidate.patch");
-                if !is_regular_nofollow(&candidate) {
-                    return Err("loop candidate patch is unsafe".into());
-                }
-                info.loop_candidate = Some(candidate);
-            }
-        }
         Ok(info)
     }
 
@@ -1031,14 +899,7 @@ impl Supervisor {
     // -----------------------------------------------------------------------
     // Provider execution. The VM is the sandbox: everything auto-approved.
 
-    fn execute(
-        &self,
-        executor: &Executor,
-        meta: &TaskMeta,
-        body: &str,
-        hint: &str,
-        context: &ContextInfo,
-    ) -> Result<i32> {
+    fn execute(&self, executor: &Executor, meta: &TaskMeta, body: &str, hint: &str) -> Result<i32> {
         let config = &self.config;
         let body = trim_trailing_newlines(body);
         let hint = trim_trailing_newlines(hint);
@@ -1053,11 +914,6 @@ impl Supervisor {
             remove_any(&path)?;
             create_new(&path, 0o644)
         };
-        // Candidate-controlled verifier checks must never write authoritative
-        // exchange artifacts: the lockdown happens BEFORE the verifier runs.
-        if lockdown_before_execution(&meta.agent) {
-            self.lock_exchange()?;
-        }
         let status = match executor.kind {
             ExecutorKind::Claude => {
                 let mut command = runuser_command(executor.user, executor.home);
@@ -1127,19 +983,6 @@ impl Supervisor {
                     .stderr(log()?)
                     .status()
             }
-            ExecutorKind::Verify => {
-                // Checks run as agent-verify under the root verifier, which
-                // signs its own verification.json; the exchange was locked
-                // above so nothing check-controlled can plant artifacts.
-                let empty = PathBuf::new();
-                Command::new(&config.exec_verify)
-                    .env("FLEET_VERIFY_RUN_AS", executor.user)
-                    .arg("verify")
-                    .arg(context.loop_manifest.as_ref().unwrap_or(&empty))
-                    .arg(context.loop_candidate.as_ref().unwrap_or(&empty))
-                    .arg(&context.baseline)
-                    .status()
-            }
         };
         status
             .map(exit_code_of)
@@ -1198,14 +1041,8 @@ impl Supervisor {
         context: &ContextInfo,
         before_exit_code: F,
     ) -> Result<()> {
-        let is_verify = executor.is_some_and(|executor| executor.kind == ExecutorKind::Verify);
         let git_present = self.config.workspace.join(".git").is_dir();
-        let steps = final_steps(
-            is_verify,
-            executor.is_some(),
-            !context.baseline.is_empty(),
-            git_present,
-        );
+        let steps = final_steps(executor.is_some(), !context.baseline.is_empty(), git_present);
         let mut trusted_ready = false;
         let mut before_exit_code = Some(before_exit_code);
         for step in steps {
@@ -1336,7 +1173,7 @@ impl Supervisor {
             && is_regular_nofollow(&config.task("context.tar.zst"))
         {
             let mut log = String::new();
-            match self.prepare_context(executor, &meta, &mut log) {
+            match self.prepare_context(executor, &mut log) {
                 Ok(info) => context = info,
                 Err(error) => {
                     log.push_str(&error);
@@ -1354,7 +1191,7 @@ impl Supervisor {
             let execution = read_bounded(&prompt, PROMPT_MAX_BYTES).and_then(|prompt_text| {
                 let body = strip_front_matter(&prompt_text);
                 let hint = read_bounded(&config.hint_file, HINT_MAX_BYTES)?;
-                self.execute(executor, &meta, &body, &hint, &context)
+                self.execute(executor, &meta, &body, &hint)
             });
             match execution {
                 Ok(code) => Outcome::Ran(code),
@@ -1433,41 +1270,32 @@ mod tests {
 
     #[test]
     fn parses_canonical_task_meta() {
-        let meta =
-            parse_task_meta("agent=claude\nmodel=sonnet\neffort=high\nkind=loop-implement\n")
-                .expect("valid meta");
+        let meta = parse_task_meta("agent=claude\nmodel=sonnet\neffort=high\n")
+            .expect("valid meta");
         assert_eq!(
             meta,
             TaskMeta {
                 agent: "claude".into(),
                 model: "sonnet".into(),
                 effort: "high".into(),
-                kind: "loop-implement".into(),
             }
         );
-        let direct = parse_task_meta("agent=verify\nmodel=fixed\neffort=\nkind=loop-verify\n")
-            .expect("valid verify meta");
-        assert_eq!(direct.agent, "verify");
-        assert_eq!(direct.effort, "");
     }
 
     #[test]
     fn rejects_hostile_task_meta() {
         // Shell metacharacters — the Bash supervisor used to `source` this.
-        assert!(parse_task_meta("agent=claude$(reboot)\nmodel=x\neffort=\nkind=\n").is_err());
-        assert!(parse_task_meta("agent=claude; rm -rf /\nmodel=x\neffort=\nkind=\n").is_err());
-        // Unknown keys, duplicates, malformed lines, oversized values.
-        assert!(parse_task_meta("agent=claude\nPATH=/tmp\nmodel=x\neffort=\nkind=\n").is_err());
-        assert!(parse_task_meta("agent=claude\nagent=codex\nmodel=x\neffort=\nkind=\n").is_err());
+        assert!(parse_task_meta("agent=claude$(reboot)\nmodel=x\neffort=\n").is_err());
+        assert!(parse_task_meta("agent=claude; rm -rf /\nmodel=x\neffort=\n").is_err());
+        // Unknown keys (the retired loop-era `kind` included), duplicates,
+        // malformed lines, oversized values.
+        assert!(parse_task_meta("agent=claude\nPATH=/tmp\nmodel=x\neffort=\n").is_err());
+        assert!(parse_task_meta("agent=claude\nmodel=x\neffort=\nkind=loop-implement\n").is_err());
+        assert!(parse_task_meta("agent=claude\nagent=codex\nmodel=x\neffort=\n").is_err());
         assert!(parse_task_meta("just a line\n").is_err());
         assert!(
-            parse_task_meta(&format!(
-                "agent={}\nmodel=x\neffort=\nkind=\n",
-                "a".repeat(65)
-            ))
-            .is_err()
+            parse_task_meta(&format!("agent={}\nmodel=x\neffort=\n", "a".repeat(65))).is_err()
         );
-        assert!(parse_task_meta("agent=claude\nmodel=x\neffort=\nkind=surprise\n").is_err());
         // Missing fields parse as empty (downstream selection rejects them).
         let sparse = parse_task_meta("agent=claude\n").expect("sparse meta");
         assert_eq!(sparse.model, "");
@@ -1496,11 +1324,8 @@ mod tests {
             ),
             ("opencode", "mystery/model", None),
             ("opencode", "", None),
-            (
-                "verify",
-                "fixed",
-                Some(("agent-verify", ExecutorKind::Verify)),
-            ),
+            // The loop-era deterministic verifier is retired.
+            ("verify", "fixed", None),
             ("", "", None),
             ("surprise", "sonnet", None),
         ];
@@ -1525,8 +1350,7 @@ mod tests {
             CredentialRule::Exactly("openrouter-key")
         );
         assert_eq!(credential_rule("opencode", "local/x"), CredentialRule::None);
-        assert_eq!(credential_rule("verify", "fixed"), CredentialRule::None);
-        assert_eq!(credential_rule("verify", "sonnet"), CredentialRule::Invalid);
+        assert_eq!(credential_rule("verify", "fixed"), CredentialRule::Invalid);
         assert_eq!(
             credential_rule("opencode", "other"),
             CredentialRule::Invalid
@@ -1588,26 +1412,6 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
-    // ---- loop mode compatibility -----------------------------------------
-
-    #[test]
-    fn loop_mode_compatibility_matrix() {
-        for agent in ["claude", "codex", "opencode"] {
-            assert!(loop_mode_compatible("implement", agent, "loop-implement"));
-            assert!(!loop_mode_compatible("verify", agent, "loop-implement"));
-            assert!(!loop_mode_compatible("implement", agent, "loop-verify"));
-        }
-        assert!(loop_mode_compatible("verify", "verify", "loop-verify"));
-        assert!(!loop_mode_compatible("implement", "verify", "loop-verify"));
-        assert!(!loop_mode_compatible("verify", "verify", "loop-implement"));
-        assert!(!loop_mode_compatible("", "claude", "loop-implement"));
-        assert!(!loop_mode_compatible(
-            "implement",
-            "verify",
-            "loop-implement"
-        ));
-    }
-
     // ---- prompt front-matter ---------------------------------------------
 
     #[test]
@@ -1641,7 +1445,7 @@ mod tests {
 
     #[test]
     fn publication_order_is_lock_then_trusted_then_exit_code() {
-        let steps = final_steps(false, true, true, true);
+        let steps = final_steps(true, true, true);
         let position = |step: FinalStep| {
             steps
                 .iter()
@@ -1656,23 +1460,16 @@ mod tests {
     }
 
     #[test]
-    fn verify_tasks_never_capture_a_patch() {
-        let steps = final_steps(true, true, true, true);
-        assert!(!steps.contains(&FinalStep::CapturePatch));
-        assert_eq!(steps.last(), Some(&FinalStep::PublishExitCode));
-    }
-
-    #[test]
     fn patch_capture_requires_user_baseline_and_git() {
         for (user, baseline, git) in [
             (false, true, true),
             (true, false, true),
             (true, true, false),
         ] {
-            assert!(!final_steps(false, user, baseline, git).contains(&FinalStep::CapturePatch));
+            assert!(!final_steps(user, baseline, git).contains(&FinalStep::CapturePatch));
         }
         // Without a selected user there is nothing to kill and no usage.
-        let rejected = final_steps(false, false, false, false);
+        let rejected = final_steps(false, false, false);
         assert_eq!(
             rejected,
             vec![
@@ -1698,16 +1495,6 @@ mod tests {
                 .contains("credential set does not match")
         );
         assert!(Outcome::Ran(0).message().is_none());
-    }
-
-    // ---- verifier exchange lockdown policy -------------------------------
-
-    #[test]
-    fn verifier_locks_exchange_before_execution() {
-        assert!(lockdown_before_execution("verify"));
-        for agent in ["claude", "codex", "opencode", ""] {
-            assert!(!lockdown_before_execution(agent));
-        }
     }
 
     #[test]
@@ -1940,7 +1727,6 @@ mod tests {
             exec_codex: root.join("bin/codex"),
             exec_opencode: root.join("bin/opencode"),
             exec_local: root.join("bin/local"),
-            exec_verify: root.join("bin/verify"),
         }
     }
 }

@@ -85,12 +85,11 @@ def main [] {
   if $narrow {
     print $"│ cockpit (svc opencode-web.service)  nginx (svc nginx.service)"
     print $"│ tunnel (svc opencode-web-tunnel.service)  squid (svc squid.service)"
-    print $"│ inference (svc llama-swap.service)  loops (svc fleet-loop-controller.service)"
+    print $"│ inference (svc llama-swap.service)"
     print $"│ tailscale (svc tailscaled.service)"
   } else {
     print $"│ cockpit (svc opencode-web.service | fill -w 14) tunnel (svc opencode-web-tunnel.service | fill -w 14) inference (svc llama-swap.service)"
     print $"│ nginx   (svc nginx.service | fill -w 14) squid  (svc squid.service | fill -w 14) tailscale (svc tailscaled.service)"
-    print $"│ loops   (svc fleet-loop-controller.service)"
   }
 
   rule "├" "┤" "DRONE BAY" $bw "cyan"
@@ -119,13 +118,6 @@ def main [] {
     }
   }
   print $"│ pool (esc attr_bold)($warm)/($workers | length) warm(esc reset)  (esc yellow)($starting) starting(esc reset)  (esc red)($failed_w) failed(esc reset)"
-  let loops = (try { ^/run/wrappers/bin/sudo -n -u @OPERATOR@ @FLEET_PATH@ loop list | complete | get stdout } catch { "" })
-  let ltbl = ($loops | lines | where ($it | str trim | is-not-empty) | parse "{id}\t{status}\titeration={iteration}\ttokens={tokens}")
-  let lactive = ($ltbl | where status !~ '^(PAUSED_|VERIFIED_CANDIDATE|EXHAUSTED|CANCELLED|FAILED_POLICY)' | length)
-  let lpaused = ($ltbl | where status =~ '^PAUSED_' | length)
-  let lverified = ($ltbl | where status == 'VERIFIED_CANDIDATE' | length)
-  print $"│ loops ($ltbl | length) total  (esc green)($lactive) active(esc reset)  (esc yellow)($lpaused) paused(esc reset)  (esc cyan)($lverified) verified(esc reset)"
-
   rule "├" "┤" "LEDGER" $bw "cyan"
   let cw = ($bw - 2 | into string)
   let costs = (with-env { COLUMNS: $cw, NO_COLOR: "1" } { try { ^ship-costs --bare | complete | get stdout } catch { "(ship-costs unavailable)" } })
