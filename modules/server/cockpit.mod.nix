@@ -22,6 +22,7 @@
       inherit (lib.modules) mkIf;
       userHome = "/home/${osConfig.primaryUser}";
       monixDir = "${userHome}/ark/monix";
+      holdDir = "${userHome}/hold";
       cockpitDir = "${userHome}/cockpit";
       cockpitMemoryDir = "${userHome}/cockpit/memory";
       claudeMemoryDir = "${userHome}/.claude/projects/-home-max-cockpit/memory";
@@ -78,7 +79,38 @@
         "systemctl is-failed*"
         "systemctl --failed*"
         "systemctl --user status*"
+        "systemctl --user show*"
+        "systemctl --user cat*"
+        "systemctl --user is-active*"
         "systemctl --user list-units*"
+        "systemctl --user list-timers*"
+      ]
+      ++ [
+        # Read-only inspection commands. Claude's built-in classifier already
+        # auto-approves most of these; listing them explicitly is what stops
+        # OpenCode (static globs only) prompting on every grep/ls. Anything
+        # that mutates state, writes files by design, or reaches the network
+        # (curl, ssh, sed -i, rm, pkill, nix shell/run) stays prompt-bound.
+        "echo *"
+        "grep *"
+        "rg *"
+        "ls"
+        "ls *"
+        "head *"
+        "tail *"
+        "wc *"
+        "stat *"
+        "du *"
+        "df"
+        "df *"
+        "file *"
+        "readlink *"
+        "realpath *"
+        "command -v *"
+        "pgrep *"
+        "tree *"
+        "sleep *"
+        "mkdir -p *"
       ];
       claudeFilePermissions = [
         monixDir
@@ -112,6 +144,8 @@
       opencodeReadPermissions = opencodeFilePermissions ++ [
         "${cockpitDir}/**"
         "${lib.strings.removePrefix "/" cockpitDir}/**"
+        "${holdDir}/**"
+        "${lib.strings.removePrefix "/" holdDir}/**"
       ];
       opencodePermissions = {
         # Claude also has a validated read-only command classifier. OpenCode
@@ -256,7 +290,18 @@
         home.file."cockpit/.claude/settings.json" = {
           force = true;
           text = builtins.toJSON {
-            permissions.allow = claudeAllow;
+            permissions = {
+              allow = claudeAllow;
+              # Transcript audit found ~400 prompts caused solely by `cd
+              # ~/ark/monix && …` leaving the cockpit working directory.
+              # Treat the flake repo and the projects dir as additional
+              # working directories: cd/read stop prompting there, while
+              # edits still follow the explicit Edit/Write rules above.
+              additionalDirectories = [
+                monixDir
+                holdDir
+              ];
+            };
           };
         };
 
