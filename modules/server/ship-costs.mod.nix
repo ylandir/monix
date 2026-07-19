@@ -16,7 +16,7 @@
 # chats leave no local artifacts and are invisible here (the Claude plan's
 # limit gauge in-app includes them; nothing exposes their tokens).
 #
-# PRICING TABLE (in the script, $/MTok) — update when vendors reprice:
+# PRICING TABLE (in ship-costs-cli/src/main.rs, $/MTok) — update when vendors reprice:
 # verified 2026-07-12: Fable 10/50, Opus 5/25, Sonnet 3/15, Haiku 1/5
 # (cache read 0.1x input, cache write 1.25x/5m 2x/1h); GPT-5.6 Sol and
 # GPT-5.5 5/30 (cached in 0.5), Terra 2.5/15, Luna 1/6.
@@ -35,20 +35,30 @@
     let
       inherit (lib.modules) mkIf;
       inherit (lib.options) mkEnableOption mkOption;
-      inherit (lib.strings) fileContents replaceStrings;
+      inherit (lib.strings) hasSuffix;
       inherit (lib) types;
 
       cfg = config.shipCosts;
 
-      shipCosts = pkgs.writeScriptBin "ship-costs" (
-        replaceStrings
-          [ "@PYTHON@" "@OPENROUTER_KEY_FILE@" ]
-          [
-            "${pkgs.python3}"
-            (if cfg.openrouterKeyFile != null then lib.generators.toJSON { } cfg.openrouterKeyFile else "None")
-          ]
-          (fileContents ./ship-costs/ship-costs.py.in)
-      );
+      # Configuration and helper-binary paths are baked in at build time
+      # (option_env!); the key file value is a runtime path string, never a
+      # nix path literal (see the option's warning below).
+      shipCosts = pkgs.rustPlatform.buildRustPackage {
+        pname = "ship-costs";
+        version = "0.1.0";
+        src = lib.sources.cleanSourceWith {
+          src = ./ship-costs/ship-costs-cli;
+          filter = path: type: type != "directory" || !hasSuffix "/target" (toString path);
+        };
+        cargoLock.lockFile = ./ship-costs/ship-costs-cli/Cargo.lock;
+        env = {
+          SHIP_OPENROUTER_KEY_FILE =
+            if cfg.openrouterKeyFile != null then cfg.openrouterKeyFile else "";
+          SHIP_SQLITE3 = "${pkgs.sqlite.bin}/bin/sqlite3";
+          SHIP_CURL = "${pkgs.curl}/bin/curl";
+        };
+        meta.mainProgram = "ship-costs";
+      };
     in
     {
       options.shipCosts = {

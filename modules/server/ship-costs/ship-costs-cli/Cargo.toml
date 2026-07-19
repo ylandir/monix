@@ -1,0 +1,15 @@
+[package]
+name = "ship-costs"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+libc = "0.2"
+serde_json = "1"
+
+[profile.release]
+lto = "thin"
+strip = true
