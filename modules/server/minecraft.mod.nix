@@ -184,6 +184,9 @@
               server-port = 25565;
               max-players = 5;
               difficulty = "normal";
+              # Captain-chosen seed for the 26.2 world remake (2026-07-19).
+              # Only consulted at world creation; inert for an existing world.
+              level-seed = "1133044835122437667";
               online-mode = true;
               white-list = false;
               # Generous sightlines: fw0 has huge headroom for 3-5 players, and
