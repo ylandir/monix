@@ -81,6 +81,38 @@ def main [] {
     }
   }
 
+  rule "├" "┤" "HULL" $bw "cyan"
+  # Hottest reading per hwmon chip; sysfs is world-readable.
+  let temps = (try {
+    ls /sys/class/hwmon/hwmon*/temp*_input | get name | each {|f|
+      let chip = (try { open ($f | path dirname | path join name) | str trim } catch { "hwmon" })
+      let deg = ((open $f | str trim | into int) / 1000 | math round)
+      {chip: $chip, deg: $deg}
+    } | group-by --to-table chip | each {|g| $"($g.chip) (($g.items.deg | math max))°C" } | str join "  "
+  } catch { "n/a" })
+  # First UPS upsd knows about; reads are unprivileged.
+  let upsname = (try { ^upsc -l localhost | complete | get stdout | lines | first | str trim } catch { "" })
+  let ups = (if ($upsname | is-empty) { "" } else {
+    (try { ^upsc $"($upsname)@localhost" | complete | get stdout } catch { "" })
+  })
+  let upsget = {|k| ($ups | lines | parse "{key}: {val}" | where key == $k | get val.0? | default "") }
+  let power = (if ($ups | is-empty) { "(no UPS)" } else {
+    let st = (do $upsget "ups.status")
+    let state = (if ($st | str contains "OB") { $"(esc red_bold)ON BATTERY(esc reset)" }
+      else if ($st | str contains "OL") { $"(esc green)online(esc reset)" } else { $st })
+    let charge = (do $upsget "battery.charge")
+    let runtime = (try { dur (do $upsget "battery.runtime") } catch { "n/a" })
+    $"($state) · charge ($charge)% · runtime ($runtime)"
+  })
+  if $narrow {
+    print $"│ temps ($temps)"
+    print $"│ power ($power)"
+    print $"│ smart (svc smartd.service)  ups (svc upsmon.service)"
+  } else {
+    print $"│ temps   ($temps)"
+    print $"│ power   ($power | fill -w 40) smart (svc smartd.service | fill -w 11) ups (svc upsmon.service)"
+  }
+
   rule "├" "┤" "SYSTEMS" $bw "cyan"
   if $narrow {
     print $"│ cockpit (svc opencode-web.service)  nginx (svc nginx.service)"
