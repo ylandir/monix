@@ -588,15 +588,19 @@ Rules:
   one pending). "what reminders are set" / "my reminders today" / "reminders
   this week" => remind_show with scope (today|week|all).
 {cal_rule}
-- DAY/SCHEDULE view: "what's the day/week look like", "what's on today/this
-  week", "what's happening", anything explicitly about THE CALENDAR/SCHEDULE
-  => post_now (kind morning for today, week for the week).
-- TO-DO/TASKS view: "show my to-dos", "show me tasks", "the to-do list", "what
-  do I still have to do", "what's on my plate", "what got done" => todos_show
-  with scope (today|week|all|overdue|done) and assignee when one person is named
-  ("what do I have" = the author). This view already folds in the week's
-  calendar, so DON'T also emit post_now for it — todos_show is the answer to
-  any "tasks/to-dos" ask, even when it sounds like it could mean the calendar.
+- AGENDA / OVERVIEW — this is the answer to almost every "what's going on" ask:
+  "what do I have to do", "what's to do", "what's the task(s)", "what's on my
+  plate", "what's on the agenda", "what's today", "what's going on today/this
+  week", "what's the day/week look like", "show my to-dos", "the to-do list",
+  even "what's on the calendar" => todos_show. ONE view that pulls ALL THREE
+  buckets together: the full to-do list, the week's calendar, and reminders.
+  scope: DEFAULT "all" (the whole picture); use "today" only if they clearly
+  bound it to today, "week" for this/next week, "done" for "what got done".
+  assignee only when a person is named ("what does gab have"); "what do I have"
+  = the author. Do NOT use post_now for these.
+- Only an explicit ask for a scheduled DIGEST ("give me the morning plan/
+  summary", "the evening report", "the week ahead") => post_now with kind
+  (morning|evening|week).
 - Asking what you can do => help.
 - UNSURE? If you genuinely cannot tell which list an item belongs to, or which
   item/list a command targets, DO NOT guess and DO NOT invent — use intent ask
@@ -1074,6 +1078,11 @@ def morning_post(db):
     if due_today:
         lines.append("Today:")
         lines += [f"  • {r['name']}{fmt_who(r)}" for r in due_today]
+    # Undated open to-dos would otherwise never surface in the day post.
+    undated = [r for r in open_items(db, "to-dos") if not r["due"]]
+    if undated:
+        lines.append("📋 To-dos:")
+        lines += [f"  {r['seq']}. {r['name']}{fmt_who(r)}" for r in undated]
     rems = [r for r in pending_reminders(db) if r["at"][:10] == now.isoformat()]
     if rems:
         lines.append("Reminders today:")
@@ -1107,6 +1116,10 @@ def evening_post(db):
     if missed:
         lines.append("Last call:")
         lines += [f"  • {r['name']}{fmt_who(r)}{fmt_due(r['due'])}" for r in missed]
+    undated = [r for r in open_items(db, "to-dos") if not r["due"]]
+    if undated:
+        lines.append("📋 Still on the list:")
+        lines += [f"  {r['seq']}. {r['name']}{fmt_who(r)}" for r in undated]
     tomorrow = now + timedelta(days=1)
     due_tmrw = [r for r in dated_open(db) if r["due"] == tomorrow.isoformat()]
     events, _ = calendar_events(tomorrow, tomorrow)
