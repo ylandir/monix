@@ -34,6 +34,8 @@
   # Plain-language line atop failure alerts, from the ship-local model
   # (free, loopback; degrades to the raw alert if inference is down).
   alerts.summary.enable = true;
+  # EcoFlow RIVER 3 Plus over USB HID; probed 2026-07-19 (usbhid-ups, 3746:ffff).
+  alerts.ups.enable = true;
 
   # Declarative Fabric Minecraft server (see minecraft.mod.nix). Tailnet-only
   # and egress-fenced so a compromised server cannot pivot onto the host.
