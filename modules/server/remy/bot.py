@@ -544,8 +544,10 @@ Rules:
   Fields: list_name (short, lowercase — reuse an existing name above when it
   fits); items = each thing separately, short, no dates/names inside; due as ISO
   yyyy-mm-dd if a day was given (today/tomorrow/EOD=today, a weekday = the NEXT
-  such day, "" if none); assignee = one Family name if it's for one person
-  ("I"/"me"/"remind me" = the author), else ""; section (lowercase) only if they
+  such day, "" if none); assignee = a Family name ONLY when the item is
+  explicitly directed at a specific NAMED person ("dylan needs to X", "gab
+  should X", "for dylan") — NEVER for "I"/"me"/"my"/"we"/"us" or when no person
+  is named; those are "" (whole household). section (lowercase) only if they
   put it in a named part of the list (e.g. recurring chores => list "chores"
   section "recurring"), else "".
   ROUTING: groceries/food with no list named => list_name "shopping"; a plain
@@ -576,7 +578,10 @@ Rules:
   at 9am to put the bins out") => remind_add with title... use field "text" for
   the thing (short) and at as 'yyyy-mm-dd HH:MM' 24h local (resolve like due
   dates; morning=09:00, noon=12:00, afternoon=15:00, evening/tonight=19:00; bare
-  "at 5" after noon = 17:00). assignee like items. A DAY deadline with no clock
+  "at 5" after noon = 17:00). assignee like items: ONLY a Family name when the
+  reminder is explicitly for a specific NAMED person ("remind dylan to X", "a
+  reminder that gab needs to X") — "remind me"/"remind us"/"remind everyone"
+  ALL get assignee "" (no tag). A DAY deadline with no clock
   time ("by friday") is an item_add to "to-dos", NOT a reminder. Cancelling
   ("cancel the csa reminder", "never mind that reminder") => remind_cancel with
   text = words from the reminder to match (leave "" only if there is exactly
@@ -907,12 +912,12 @@ def do_list_show(db, act):
             last_sec = r["section"]
         lines.append(f"  {fmt_item(r)}")
     out = "\n".join(lines)
-    # The to-dos list doubles as "my plate" — fold in the week's calendar so
-    # asking for it is never mistaken for (or missing) the schedule.
-    if ln == "to-dos" and db.cal:
-        peek = cal_peek(db)
-        if peek:
-            out += "\n\n" + peek
+    # The to-dos list doubles as "my plate" — fold in the week's calendar and
+    # reminders so asking for it is never missing the schedule.
+    if ln == "to-dos":
+        for extra in (cal_peek(db) if db.cal else "", rem_peek(db, "week")):
+            if extra:
+                out += "\n\n" + extra
     return out
 
 
@@ -978,10 +983,11 @@ def do_todos_show(db, act):
     else:
         head = "To-dos" + (f" — {who}" if who else "") + ":"
     out = head + "\n" + ("\n".join(fmt_item(r) for r in rows) or "(nothing!)")
-    if db.cal and scope in ("", "all", "today", "week"):
-        peek = cal_peek(db)
-        if peek:
-            out += "\n\n" + peek
+    if scope in ("", "all", "today", "week"):
+        rem_scope = scope if scope in ("today", "week") else "all"
+        for extra in (cal_peek(db) if db.cal else "", rem_peek(db, rem_scope)):
+            if extra:
+                out += "\n\n" + extra
     return out
 
 
@@ -1037,6 +1043,23 @@ def cal_peek(db):
         lines.append(date.fromisoformat(d).strftime("%A %b %-d") + ":")
         lines += by_day[d]
     return "\n".join(lines)
+
+
+def rem_peek(db, scope="week"):
+    """Pending reminders for a scope, as a section for the to-do view. today =
+    time only (all same day); week = through Sunday, dated; all = everything."""
+    rows = pending_reminders(db)
+    now = today()
+    with_date = True
+    if scope == "today":
+        rows = [r for r in rows if r["at"][:10] == now.isoformat()]
+        with_date = False
+    elif scope == "week":
+        end = (now + timedelta(days=6 - now.weekday())).isoformat()
+        rows = [r for r in rows if r["at"][:10] <= end]
+    if not rows:
+        return ""
+    return "⏰ Reminders:\n" + "\n".join("  " + fmt_reminder(r, with_date) for r in rows)
 
 
 def morning_post(db):
@@ -1664,8 +1687,10 @@ class Bot:
                     msg = (f"⏰ {'@' + r['assignee'] + ': ' if r['assignee'] else ''}{r['text']}"
                            f"{' (meant for ' + r['at'] + ')' if late else ''}")
                     try:
+                        # @tag only an explicitly-named person; an unassigned
+                        # reminder still notifies (m.text) but pings no one.
                         await self.send(room, msg, notify=True,
-                                        mention=r["assignee"] or "room")
+                                        mention=r["assignee"] or None)
                         db.execute("UPDATE reminder SET fired_ts=? WHERE id=?",
                                    (int(time.time()), r["id"]))
                         db.commit()
