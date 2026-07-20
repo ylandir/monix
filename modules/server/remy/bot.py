@@ -205,12 +205,15 @@ def home_db(path=DB_PATH, cal=True):
                           t["due"], t["created_by"])
         meta_set(db, "merged_v2", "1")
     db.commit()
-    # Per-list display numbers: give any unnumbered row (fresh column, or a
-    # row from the merge) a stable 1..N within its list, ordered by id. Only
-    # touches seq=0 rows, so it is a one-time backfill that then no-ops.
+    # Per-list display numbers: number each list's OPEN items 1..N by id, so
+    # what people see is always gap-free (retired rows are skipped, not
+    # counted). Recomputed every start; the handlers re-run the same
+    # compaction after each change. Retired rows get 0 so they never collide.
     db.execute("UPDATE item SET seq = (SELECT COUNT(*) FROM item i2 "
-               "WHERE i2.list_name = item.list_name AND i2.id <= item.id) "
-               "WHERE seq = 0")
+               "WHERE i2.list_name = item.list_name AND i2.deleted=0 "
+               "AND i2.done_ts IS NULL AND i2.id <= item.id) "
+               "WHERE deleted=0 AND done_ts IS NULL")
+    db.execute("UPDATE item SET seq=0 WHERE deleted=1 OR done_ts IS NOT NULL")
     db.commit()
     return db
 
@@ -492,7 +495,7 @@ def home_parse(db, sender_name, text):
     else:
         listing = "(no lists yet)"
     list_names = ", ".join(lists.keys()) or "(none yet)"
-    deleted = "\n".join(f"[{r['list_name']}] {r['seq']}. {r['name']}" for r in db.execute(
+    deleted = "\n".join(f"[{r['list_name']}] {r['name']}" for r in db.execute(
         "SELECT * FROM item WHERE deleted=1 ORDER BY id DESC LIMIT 5"))
     reminders = "\n".join(fmt_reminder(r) for r in pending_reminders(db)) or "(none)"
     chat_desc = ("family household-organizer chat" if db.cal else
@@ -527,7 +530,7 @@ Open lists (each item shown as its per-list number — numbers restart per list,
 so "2" in shopping is a different item than "2" in chores):
 {listing}
 Existing list names: {list_names}
-Recently removed items (restorable), shown as [list] number name:
+Recently removed items (restorable), shown as [list] name:
 {deleted or "(none)"}
 Pending reminders (id time text):
 {reminders}
@@ -561,8 +564,10 @@ Rules:
 - Rewording/redating/reassigning/moving ("push the dentist to friday", "give the
   milk to gab") => item_edit with list_name + item_id and only the changed
   new_name/new_due/new_assignee. Removing one => item_remove with list_name +
-  item_id; bringing one back ("restore the milk") => item_restore with list_name
-  + item_id (its list + number are in the removed-items list above).
+  item_id. Bringing one back ("restore the milk", "undo that") => item_restore
+  with new_name = the removed item's name (from the removed list above) and
+  list_name if a list was named — removed items are referenced by NAME, not a
+  number.
 - MANAGING lists: "show the shopping list" / "what's on chores" => list_show
   with list_name. "what lists do we have" / "show all my lists" => lists_show.
   "rename hardware to garage" => list_rename with list_name + new_list_name.
@@ -741,16 +746,27 @@ def do_remind_show(db):
                                  or "(none)")
 
 
-def get_item(db, act):
-    """Resolve an item the way people refer to it: its list plus its per-list
-    number. Returns the row regardless of done/deleted state (seq is unique
-    within a list, including retired rows), so callers check state themselves."""
+def renumber(db, list_name):
+    """Compact a list's OPEN items to 1..N by id so displayed numbers stay
+    gap-free; retired rows get 0. Run after any change to the list."""
+    for i, row in enumerate(db.execute(
+            "SELECT id FROM item WHERE list_name=? AND deleted=0 AND done_ts IS NULL "
+            "ORDER BY id", (list_name,)).fetchall(), 1):
+        db.execute("UPDATE item SET seq=? WHERE id=?", (i, row["id"]))
+    db.execute("UPDATE item SET seq=0 WHERE list_name=? AND (deleted=1 OR done_ts IS NOT NULL)",
+               (list_name,))
+    db.commit()
+
+
+def get_open(db, act):
+    """Resolve an item the way people refer to it: its list plus the number
+    shown next to it. Open items only (numbers only ever label open items)."""
     ln = (act.get("list_name") or "").strip().lower()
     seq = act.get("item_id") or 0
     if not ln or not seq:
         return None
-    return db.execute("SELECT * FROM item WHERE list_name=? AND seq=?",
-                      (ln, seq)).fetchone()
+    return db.execute("SELECT * FROM item WHERE list_name=? AND seq=? AND deleted=0 "
+                      "AND done_ts IS NULL", (ln, seq)).fetchone()
 
 
 NEED_REF = ("Which item? Say its list and number (e.g. 'done 2 on shopping') "
@@ -768,16 +784,13 @@ def do_item_add(db, act, sender):
         # just teach the phrasing.
         return f"👍 '{ln}' it is — put things on it like 'add milk to {ln}'."
     now_ts = int(time.time())
-    # Continue the list's numbering from its high-water mark (retired rows
-    # counted) so per-list numbers stay stable and are never reused.
-    base = db.execute("SELECT COALESCE(MAX(seq),0) m FROM item WHERE list_name=?",
-                      (ln,)).fetchone()["m"]
     ids = []
-    for i, n in enumerate(names, 1):
-        db.execute("INSERT INTO item(list_name,name,seq,due,assignee,section,added_by,added_ts)"
-                   " VALUES(?,?,?,?,?,?,?,?)", (ln, n, base + i, due, who, section, sender, now_ts))
+    for n in names:
+        db.execute("INSERT INTO item(list_name,name,due,assignee,section,added_by,added_ts)"
+                   " VALUES(?,?,?,?,?,?,?)", (ln, n, due, who, section, sender, now_ts))
         ids.append(db.execute("SELECT last_insert_rowid() r").fetchone()["r"])
     db.commit()
+    renumber(db, ln)
     if due:
         for i in ids:
             sync_item_event(db, i)
@@ -788,20 +801,21 @@ def do_item_add(db, act, sender):
 
 
 def do_item_done(db, act, sender):
-    r = get_item(db, act)
-    if not r or r["deleted"]:
+    r = get_open(db, act)
+    if not r:
         return NEED_REF
     db.execute("UPDATE item SET done_ts=?, done_by=? WHERE id=?",
                (int(time.time()), sender, r["id"]))
     db.commit()
+    renumber(db, r["list_name"])
     if r["due"]:
         sync_item_event(db, r["id"])
     return f"✔ {r['name']} checked off {r['list_name']}"
 
 
 def do_item_edit(db, act):
-    r = get_item(db, act)
-    if not r or r["deleted"]:
+    r = get_open(db, act)
+    if not r:
         return NEED_REF
     changes, params = [], []
     if act.get("new_name"):
@@ -816,27 +830,41 @@ def do_item_edit(db, act):
         return "Nothing to change that I understood."
     db.execute(f"UPDATE item SET {','.join(changes)} WHERE id=?", (*params, r["id"]))
     db.commit()
+    renumber(db, r["list_name"])
     sync_item_event(db, r["id"])
     return "✏️ " + fmt_item(db.execute("SELECT * FROM item WHERE id=?", (r["id"],)).fetchone())
 
 
 def do_item_remove(db, act):
-    r = get_item(db, act)
-    if not r or r["deleted"]:
+    r = get_open(db, act)
+    if not r:
         return NEED_REF
     db.execute("UPDATE item SET deleted=1 WHERE id=?", (r["id"],))
     db.commit()
+    renumber(db, r["list_name"])
     if r["due"]:
         sync_item_event(db, r["id"])
     return f"🗑 removed {r['name']} from {r['list_name']} (say 'restore the {r['name']}' to undo)"
 
 
 def do_item_restore(db, act):
-    r = get_item(db, act)
-    if not r or not r["deleted"]:
-        return "Nothing removed by that name/number to bring back."
+    # Removed items no longer carry a live number, so bring one back by name
+    # (most recent match), optionally scoped to a list.
+    name = (act.get("new_name") or "").strip().lower()
+    ln = (act.get("list_name") or "").strip().lower()
+    q, args = "SELECT * FROM item WHERE deleted=1", []
+    if ln:
+        q += " AND list_name=?"; args.append(ln)
+    if name:
+        q += " AND lower(name) LIKE ?"; args.append(f"%{name}%")
+    q += " ORDER BY id DESC LIMIT 1"
+    r = db.execute(q, tuple(args)).fetchone()
+    if not r:
+        return "Nothing removed to bring back."
     db.execute("UPDATE item SET deleted=0 WHERE id=?", (r["id"],))
     db.commit()
+    renumber(db, r["list_name"])
+    r = db.execute("SELECT * FROM item WHERE id=?", (r["id"],)).fetchone()
     if r["due"]:
         sync_item_event(db, r["id"])
     return "↩️ restored " + fmt_item(r)
@@ -875,15 +903,10 @@ def do_list_rename(db, act):
         return "Rename which list to what? ('rename hardware to garage')"
     n = db.execute("UPDATE item SET list_name=? WHERE list_name=? AND deleted=0",
                    (new, ln)).rowcount
-    if not n:
-        db.commit()
-        return f"No open list called '{ln}'."
-    # Renaming into an existing list could collide numbers; re-number the
-    # target contiguously by id so each # stays unique within the list.
-    for i, row in enumerate(db.execute(
-            "SELECT id FROM item WHERE list_name=? ORDER BY id", (new,)).fetchall(), 1):
-        db.execute("UPDATE item SET seq=? WHERE id=?", (i, row["id"]))
     db.commit()
+    if not n:
+        return f"No open list called '{ln}'."
+    renumber(db, new)  # merged into a possibly-existing list — recompact it
     return f"✏️ '{ln}' → '{new}' ({n} item{'s' if n != 1 else ''})"
 
 
@@ -894,6 +917,7 @@ def do_list_clear(db, act):
     n = db.execute("UPDATE item SET deleted=1 WHERE list_name=? AND deleted=0",
                    (ln,)).rowcount
     db.commit()
+    renumber(db, ln)
     return f"🧹 cleared {ln} ({n} item{'s' if n != 1 else ''}; restorable from history)"
 
 
@@ -905,7 +929,7 @@ def do_todos_show(db, act):
             "SELECT * FROM item WHERE list_name='to-dos' AND deleted=0 "
             "AND done_ts IS NOT NULL ORDER BY done_ts DESC LIMIT 10").fetchall()
         return "Recently done:\n" + ("\n".join(
-            f"✔ {r['seq']}. {r['name']} ({r['done_by']})" for r in rows) or "(nothing yet)")
+            f"✔ {r['name']} ({r['done_by']})" for r in rows) or "(nothing yet)")
     rows = open_items(db, "to-dos")
     who = valid_assignee(act.get("assignee"))
     if who:
