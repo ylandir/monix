@@ -64,10 +64,6 @@ def now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 
-def day(ts: str) -> str:
-    return ts[:10]
-
-
 def connect(path: str = DB_PATH) -> sqlite3.Connection:
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
@@ -85,11 +81,30 @@ def connect(path: str = DB_PATH) -> sqlite3.Connection:
 
 
 def parse_date(s):
-    """'' -> None; 'YYYY-MM-DD' -> normalized; anything else raises ValueError."""
+    """'' -> None; 'May 20' / '5/20' / '2026-05-20' -> ISO date; anything
+    else raises ValueError. Yearless dates mean the next occurrence."""
     s = (s or "").strip()
     if not s:
         return None
-    return datetime.strptime(s, "%Y-%m-%d").strftime("%Y-%m-%d")
+    for fmt in ("%Y-%m-%d", "%b %d", "%B %d", "%m/%d"):
+        try:
+            dt = datetime.strptime(s, fmt)
+            break
+        except ValueError:
+            continue
+    else:
+        raise ValueError(s)
+    if dt.year == 1900:  # no year given
+        today = datetime.now()
+        dt = dt.replace(year=today.year)
+        if dt.date() < today.date():
+            dt = dt.replace(year=today.year + 1)
+    return dt.strftime("%Y-%m-%d")
+
+
+def fmt_date(iso):
+    """'2026-05-20...' -> 'May 20'."""
+    return datetime.strptime(iso[:10], "%Y-%m-%d").strftime("%b %-d")
 
 
 def fmt_amount(x: float) -> str:
@@ -220,14 +235,14 @@ def close_request(conn, req_id, who):
 
 def fmt_window(start, end):
     if start and end:
-        return f"{start} → {end}"
-    return start or ""
+        return f"{fmt_date(start)} → {fmt_date(end)}"
+    return fmt_date(start) if start else ""
 
 
 def order_text(r):
     return (
         f"**{r['account']}** — {fmt_qty(r['amount'], r['unit'], r['item'])}"
-        f" · {r['entered_by']} · {day(r['created_at'])}"
+        f" · {r['entered_by']} · {fmt_date(r['created_at'])}"
     )
 
 
@@ -320,7 +335,7 @@ class CheckOffButton(
         await interaction.response.edit_message(view=view)
         if result != "ok":
             await interaction.followup.send(
-                f"(that one was already checked off on {day(result)})",
+                f"(that one was already checked off on {fmt_date(result)})",
                 ephemeral=True,
             )
 
@@ -398,15 +413,15 @@ async def send_row_list(interaction, kind, rows, heading, empty_text, filename):
 
 class RequestModal(discord.ui.Modal, title="Request"):
     start = discord.ui.TextInput(
-        label="Start date (YYYY-MM-DD)",
-        placeholder="2026-08-02",
-        max_length=10,
+        label="Start date",
+        placeholder="May 20",
+        max_length=12,
     )
     end = discord.ui.TextInput(
-        label="End date (YYYY-MM-DD)",
+        label="End date",
         required=False,
         placeholder="leave empty for just the one day",
-        max_length=10,
+        max_length=12,
     )
 
     async def on_submit(self, interaction: discord.Interaction):
@@ -415,12 +430,13 @@ class RequestModal(discord.ui.Modal, title="Request"):
             end = parse_date(str(self.end))
         except ValueError:
             await interaction.response.send_message(
-                "Dates must look like 2026-07-22 (YYYY-MM-DD).", ephemeral=True
+                "Dates should look like 'May 20'.", ephemeral=True
             )
             return
         if end and end < start:
             await interaction.response.send_message(
-                f"End date {end} is before start date {start}.", ephemeral=True
+                f"End date {fmt_date(end)} is before start date"
+                f" {fmt_date(start)}.", ephemeral=True
             )
             return
         who = interaction.user.display_name
