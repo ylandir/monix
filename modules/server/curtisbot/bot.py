@@ -7,10 +7,14 @@ through with who checked them, until /clear hides them. Nothing is ever
 deleted: checking off stamps done_at/done_by, clearing stamps cleared_at.
 
 Environment:
-  DISCORD_TOKEN     bot token (required; never logged)
-  CURTISBOT_DB      sqlite file path (default ./bot.db)
-  DISCORD_GUILD_ID  optional guild id — sync commands to that guild only
-                    (instant availability; global sync can take an hour)
+  DISCORD_TOKEN          bot token (required; never logged)
+  CURTISBOT_DB           sqlite file path (default ./bot.db)
+  CURTISBOT_TEST_DB      sandbox sqlite path (default ./test.db)
+  DISCORD_GUILD_ID       the real guild id — sync commands there; its
+                         interactions hit the real DB (instant sync;
+                         unset = global sync, everything on the real DB)
+  DISCORD_TEST_GUILD_ID  optional test guild id — commands sync there
+                         too, but its interactions hit the sandbox DB
 """
 
 import io
@@ -25,7 +29,9 @@ import discord
 from discord import app_commands
 
 DB_PATH = os.environ.get("CURTISBOT_DB", "bot.db")
+TEST_DB_PATH = os.environ.get("CURTISBOT_TEST_DB", "test.db")
 GUILD_ID = os.environ.get("DISCORD_GUILD_ID", "").strip()
+TEST_GUILD_ID = os.environ.get("DISCORD_TEST_GUILD_ID", "").strip()
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS orders (
@@ -293,7 +299,7 @@ class CheckOffButton(
     async def callback(self, interaction: discord.Interaction):
         who = interaction.user.display_name
         close = close_request if self.kind == "req" else check_order
-        result = close(db, self.row_id, who)
+        result = close(db_for(interaction), self.row_id, who)
         if result == "missing":
             await interaction.response.send_message(
                 "That row doesn't exist.", ephemeral=True
@@ -410,7 +416,7 @@ class RequestModal(discord.ui.Modal, title="Request"):
             )
             return
         who = interaction.user.display_name
-        add_request(db, "", who, start, end)
+        add_request(db_for(interaction), "", who, start, end)
         await interaction.response.send_message(
             f"Request added: **{who}** · {fmt_window(start, end)}"
         )
@@ -434,10 +440,11 @@ class WholesaleModal(discord.ui.Modal, title="Wholesale order"):
             )
             return
         who = interaction.user.display_name
+        d = db_for(interaction)
         rows = []
         for line in item_lines:
             amount, unit, item = parse_item_line(line)
-            oid = add_order(db, account, item, amount, unit, who)
+            oid = add_order(d, account, item, amount, unit, who)
             rows.append({"id": oid, "text": fmt_qty(amount, unit, item)})
         lines = [f"**{account}** — logged by {who}:"]
         lines += [f"- {r['text']}" for r in rows]
@@ -451,22 +458,42 @@ class Bot(discord.Client):
 
     async def setup_hook(self):
         self.add_dynamic_items(CheckOffButton)
-        if GUILD_ID:
-            guild = discord.Object(id=int(GUILD_ID))
-            self.tree.copy_global_to(guild=guild)
-            await self.tree.sync(guild=guild)
-        else:
+        guild_ids = [g for g in (GUILD_ID, TEST_GUILD_ID) if g]
+        if not guild_ids:
             await self.tree.sync()
+            return
+        for gid in guild_ids:
+            guild = discord.Object(id=int(gid))
+            self.tree.copy_global_to(guild=guild)
+            try:
+                await self.tree.sync(guild=guild)
+            except discord.Forbidden:
+                # Not (yet) invited there. Fatal for the real guild —
+                # crash so systemd retries until the invite lands — but
+                # the test guild is optional.
+                if gid == GUILD_ID:
+                    raise
+                print(f"test guild {gid}: bot not invited, skipping sync",
+                      file=sys.stderr)
 
 
 bot = Bot()
-db = None  # set in main()
+main_db = None  # both set in main()
+test_db = None
+
+
+def db_for(interaction) -> sqlite3.Connection:
+    """Route the real guild to the real DB; anywhere else (the test
+    guild, DMs) hits the sandbox DB so experiments never mix with work."""
+    if not GUILD_ID or str(interaction.guild_id) == GUILD_ID:
+        return main_db
+    return test_db
 
 
 async def account_autocomplete(interaction, current: str):
     return [
         app_commands.Choice(name=v[:100], value=v[:100])
-        for v in distinct_values(db, "account", current)
+        for v in distinct_values(db_for(interaction), "account", current)
     ]
 
 
@@ -480,7 +507,7 @@ async def wholesale(interaction: discord.Interaction):
 @app_commands.autocomplete(account=account_autocomplete)
 async def orders(interaction: discord.Interaction, account: str | None = None):
     await interaction.response.defer()
-    rows = open_orders(db, account)
+    rows = open_orders(db_for(interaction), account)
     heading = "Open order lines" + (f" — {account.strip()}" if account else "") + ":"
     await send_row_list(
         interaction, "ord", rows, heading, f"{heading}\nNothing open.", "orders.txt"
@@ -495,7 +522,7 @@ async def request(interaction: discord.Interaction):
 @bot.tree.command(description="List open requests")
 async def requests(interaction: discord.Interaction):
     await interaction.response.defer()
-    rows = open_requests(db)
+    rows = open_requests(db_for(interaction))
     await send_row_list(
         interaction, "req", rows, "Open requests:", "No open requests.", "requests.txt"
     )
@@ -504,7 +531,7 @@ async def requests(interaction: discord.Interaction):
 @bot.tree.command(description="Clear checked-off rows out of the lists")
 async def clear(interaction: discord.Interaction):
     await interaction.response.defer()
-    o, r = clear_done(db)
+    o, r = clear_done(db_for(interaction))
     await interaction.followup.send(
         f"Cleared {o} checked-off order line{'s' if o != 1 else ''}"
         f" and {r} request{'s' if r != 1 else ''}."
@@ -513,12 +540,13 @@ async def clear(interaction: discord.Interaction):
 
 
 def main():
-    global db
+    global main_db, test_db
     token = os.environ.get("DISCORD_TOKEN")
     if not token:
         print("DISCORD_TOKEN not set", file=sys.stderr)
         sys.exit(1)
-    db = connect()
+    main_db = connect(DB_PATH)
+    test_db = connect(TEST_DB_PATH)
     bot.run(token)
 
 

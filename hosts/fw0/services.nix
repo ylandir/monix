@@ -140,6 +140,8 @@
   curtisbot.enable = true;
   curtisbot.credentialsEnvFile = config.secrets.curtisbot-env.path;
   curtisbot.guildId = "916523305362685952";
+  # Test server sandbox: same commands, separate test.db.
+  curtisbot.testGuildId = "1529484237210910753";
 
   # opencode web UI cockpit seat, authenticated by Cloudflare Access.
   cockpit.webEnable = true;

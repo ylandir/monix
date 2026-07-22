@@ -57,6 +57,16 @@
             globally, which Discord can take up to an hour to propagate.
           '';
         };
+
+        testGuildId = mkOption {
+          type = types.nullOr types.str;
+          default = null;
+          description = ''
+            Optional second guild for testing: commands sync there too,
+            but its interactions hit a separate sandbox database
+            (test.db) so experiments never touch the real data.
+          '';
+        };
       };
 
       config = mkIf cfg.enable {
@@ -73,8 +83,11 @@
           after = [ "network-online.target" ];
           environment = {
             CURTISBOT_DB = "/var/lib/curtisbot/bot.db";
+            CURTISBOT_TEST_DB = "/var/lib/curtisbot/test.db";
           } // lib.optionalAttrs (cfg.guildId != null) {
             DISCORD_GUILD_ID = cfg.guildId;
+          } // lib.optionalAttrs (cfg.testGuildId != null) {
+            DISCORD_TEST_GUILD_ID = cfg.testGuildId;
           };
           serviceConfig = {
             ExecStart = "${python}/bin/python ${./bot.py}";
