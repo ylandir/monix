@@ -4,11 +4,11 @@
 # be removed or moved to another machine's config wholesale — delete these
 # two paths plus the enable/secret lines in hosts/fw0 and it's gone.
 #
-# Slash commands for the shop's two running lists: wholesale orders
+# Slash commands for two running work lists: wholesale orders
 # (/wholesale form -> order lines, /orders) and staff requests
-# (/request form, /requests), both checked off via per-row buttons.
-# Rows are never deleted — checking off stamps done_at/done_by and drops
-# the row from the default views.
+# (/request form, /requests), both checked off via inline per-row
+# buttons; checked rows stay struck-through in the lists until /clear.
+# Rows are never deleted — check-off and clear are timestamp stamps.
 #
 # One long-running unit. Egress is internet-only (Discord gateway/API) plus
 # loopback for the resolver; LAN/tailnet/fleet ranges stay denied — the

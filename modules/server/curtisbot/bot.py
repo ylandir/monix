@@ -1,10 +1,10 @@
 """Curtis: work-Discord bot for wholesale order lines and staff requests.
 
-Slash commands (app_commands) plus interactive bits: /request opens a
-modal form (item + optional start/end dates) and every list/confirmation
-carries per-row ✓ buttons that check rows off in place. Rows are never
-deleted: checking off stamps done_at/done_by and rows drop out of the
-default views.
+Slash commands (app_commands) plus interactive bits: /wholesale and
+/request open modal entry forms; /orders and /requests list rows with an
+inline ✓ button per open row. Checked-off rows stay in the lists, struck
+through with who checked them, until /clear hides them. Nothing is ever
+deleted: checking off stamps done_at/done_by, clearing stamps cleared_at.
 
 Environment:
   DISCORD_TOKEN     bot token (required; never logged)
@@ -37,7 +37,8 @@ CREATE TABLE IF NOT EXISTS orders (
     entered_by TEXT NOT NULL,
     created_at TEXT NOT NULL,
     done_at    TEXT,
-    done_by    TEXT
+    done_by    TEXT,
+    cleared_at TEXT
 );
 CREATE TABLE IF NOT EXISTS requests (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -47,7 +48,8 @@ CREATE TABLE IF NOT EXISTS requests (
     start_date   TEXT,
     end_date     TEXT,
     done_at      TEXT,
-    done_by      TEXT
+    done_by      TEXT,
+    cleared_at   TEXT
 );
 """
 
@@ -64,11 +66,14 @@ def connect(path: str = DB_PATH) -> sqlite3.Connection:
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
-    # Migrate databases created before the request date window existed.
+    # Migrate databases created before later columns existed.
     cols = {r[1] for r in conn.execute("PRAGMA table_info(requests)")}
-    for col in ("start_date", "end_date"):
+    for col in ("start_date", "end_date", "cleared_at"):
         if col not in cols:
             conn.execute(f"ALTER TABLE requests ADD COLUMN {col} TEXT")
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(orders)")}
+    if "cleared_at" not in cols:
+        conn.execute("ALTER TABLE orders ADD COLUMN cleared_at TEXT")
     conn.commit()
     return conn
 
@@ -121,7 +126,8 @@ def add_order(conn, account, item, amount, unit, who):
 
 
 def open_orders(conn, account=None):
-    q = "SELECT * FROM orders WHERE done_at IS NULL"
+    """Visible = not yet cleared; includes checked-off rows until /clear."""
+    q = "SELECT * FROM orders WHERE cleared_at IS NULL"
     args = []
     if account is not None:
         q += " AND account = ? COLLATE NOCASE"
@@ -167,9 +173,27 @@ def add_request(conn, item, who, start=None, end=None):
 
 
 def open_requests(conn):
+    """Visible = not yet cleared; includes checked-off rows until /clear."""
     return conn.execute(
-        "SELECT * FROM requests WHERE done_at IS NULL ORDER BY id"
+        "SELECT * FROM requests WHERE cleared_at IS NULL ORDER BY id"
     ).fetchall()
+
+
+def clear_done(conn):
+    """Hide checked-off rows from the lists. Returns (orders, requests) counts."""
+    ts = now()
+    o = conn.execute(
+        "UPDATE orders SET cleared_at = ? WHERE done_at IS NOT NULL"
+        " AND cleared_at IS NULL",
+        (ts,),
+    ).rowcount
+    r = conn.execute(
+        "UPDATE requests SET cleared_at = ? WHERE done_at IS NOT NULL"
+        " AND cleared_at IS NULL",
+        (ts,),
+    ).rowcount
+    conn.commit()
+    return o, r
 
 
 def close_request(conn, req_id, who):
@@ -188,35 +212,43 @@ def close_request(conn, req_id, who):
 # ---- formatting
 
 
-def render_orders(rows, heading):
-    if not rows:
-        return f"{heading}\nNothing open."
-    lines = [heading]
-    for r in rows:
-        lines.append(
-            f"`#{r['id']}` {r['account']} — {fmt_qty(r['amount'], r['unit'], r['item'])}"
-            f" · {r['entered_by']} · {day(r['created_at'])}"
-        )
-    return "\n".join(lines)
-
-
 def fmt_window(start, end):
     if start and end:
         return f"{start} → {end}"
     return start or ""
 
 
+def order_text(r):
+    return (
+        f"**{r['account']}** — {fmt_qty(r['amount'], r['unit'], r['item'])}"
+        f" · {r['entered_by']} · {day(r['created_at'])}"
+    )
+
+
+def request_text(r):
+    # Legacy rows carried a free-text item; new ones are person+dates.
+    item = f"{r['item']} · " if r["item"] else ""
+    window = fmt_window(r["start_date"], r["end_date"])
+    window = f" · {window}" if window else ""
+    return f"{item}**{r['requested_by']}**{window}"
+
+
+def flat_text(r, text):
+    if r["done_at"] is not None:
+        return f"{text(r)}  [✔ {r['done_by']}]"
+    return text(r)
+
+
+def render_orders(rows, heading):
+    if not rows:
+        return f"{heading}\nNothing open."
+    return "\n".join([heading] + [flat_text(r, order_text) for r in rows])
+
+
 def render_requests(rows):
     if not rows:
         return "No open requests."
-    lines = ["Open requests:"]
-    for r in rows:
-        # Legacy rows carried a free-text item; new ones are person+dates.
-        item = f" {r['item']} ·" if r["item"] else ""
-        window = fmt_window(r["start_date"], r["end_date"])
-        window = f" · {window}" if window else ""
-        lines.append(f"`#{r['id']}`{item} {r['requested_by']}{window}")
-    return "\n".join(lines)
+    return "\n".join(["Open requests:"] + [flat_text(r, request_text) for r in rows])
 
 
 # ---- discord plumbing
@@ -248,7 +280,7 @@ class CheckOffButton(
         self.row_id = row_id
         super().__init__(
             discord.ui.Button(
-                label=f"✓ #{row_id}",
+                label="✓",
                 style=discord.ButtonStyle.success,
                 custom_id=f"egb:{kind}:{row_id}",
             )
@@ -264,33 +296,81 @@ class CheckOffButton(
         result = close(db, self.row_id, who)
         if result == "missing":
             await interaction.response.send_message(
-                f"`#{self.row_id}` doesn't exist.", ephemeral=True
+                "That row doesn't exist.", ephemeral=True
             )
             return
-        # Strike the row's line and drop its button, in place.
-        lines = []
-        for line in interaction.message.content.splitlines():
-            if line.startswith(f"`#{self.row_id}`") and not line.startswith("~~"):
-                line = f"~~{line}~~ ✅ {who}"
-            lines.append(line)
-        view = discord.ui.View.from_message(interaction.message)
-        for child in list(view.children):
-            if getattr(child, "custom_id", None) == f"egb:{self.kind}:{self.row_id}":
-                view.remove_item(child)
-        await interaction.response.edit_message(content="\n".join(lines), view=view)
+        # Rebuild the message from its own components: the clicked row's
+        # section becomes struck-through text; every other row keeps its
+        # button. (No bot-side state — the message is the state.)
+        view = discord.ui.LayoutView(timeout=None)
+        for comp in interaction.message.components:
+            if isinstance(comp, discord.components.SectionComponent):
+                text = comp.components[0].content
+                cid = getattr(comp.accessory, "custom_id", "") or ""
+                if cid == f"egb:{self.kind}:{self.row_id}":
+                    view.add_item(discord.ui.TextDisplay(f"~~{text}~~ ✅ {who}"))
+                    continue
+                m = self.template.match(cid)
+                if m:
+                    view.add_item(
+                        discord.ui.Section(
+                            discord.ui.TextDisplay(text),
+                            accessory=CheckOffButton(m["kind"], int(m["id"])),
+                        )
+                    )
+                else:
+                    view.add_item(discord.ui.TextDisplay(text))
+            elif isinstance(comp, discord.components.TextDisplay):
+                view.add_item(discord.ui.TextDisplay(comp.content))
+        await interaction.response.edit_message(view=view)
         if result != "ok":
             await interaction.followup.send(
-                f"(`#{self.row_id}` was already checked off on {day(result)})",
+                f"(that one was already checked off on {day(result)})",
                 ephemeral=True,
             )
 
 
-def checkoff_view(kind, rows):
-    """One ✓ button per row; Discord caps a message at 25 buttons."""
-    view = discord.ui.View(timeout=None)
-    for r in rows[:25]:
-        view.add_item(CheckOffButton(kind, r["id"]))
+# Components-v2 messages have a 40-component budget; each row costs 3
+# (section + text + button), so long lists chunk across messages.
+ROWS_PER_MESSAGE = 12
+MAX_BUTTON_ROWS = 48
+
+
+def rows_view(kind, rows, heading=None):
+    """Inline list: open rows get their ✓ button on the line; checked-off
+    rows stay visible, struck through with who checked them."""
+    view = discord.ui.LayoutView(timeout=None)
+    if heading:
+        view.add_item(discord.ui.TextDisplay(heading))
+    text = order_text if kind == "ord" else request_text
+    for r in rows:
+        if r["done_at"] is not None:
+            view.add_item(
+                discord.ui.TextDisplay(f"~~{text(r)}~~ ✅ {r['done_by']}")
+            )
+        else:
+            view.add_item(
+                discord.ui.Section(
+                    discord.ui.TextDisplay(text(r)),
+                    accessory=CheckOffButton(kind, r["id"]),
+                )
+            )
     return view
+
+
+async def send_row_list(interaction, kind, rows, heading, empty_text, filename):
+    if not rows:
+        await interaction.followup.send(empty_text)
+        return
+    if len(rows) > MAX_BUTTON_ROWS:
+        text = render_orders(rows, heading) if kind == "ord" else render_requests(rows)
+        await reply(interaction, text, filename)
+        return
+    for i in range(0, len(rows), ROWS_PER_MESSAGE):
+        chunk = rows[i : i + ROWS_PER_MESSAGE]
+        await interaction.followup.send(
+            view=rows_view(kind, chunk, heading if i == 0 else None)
+        )
 
 
 class RequestModal(discord.ui.Modal, title="Request"):
@@ -321,9 +401,9 @@ class RequestModal(discord.ui.Modal, title="Request"):
             )
             return
         who = interaction.user.display_name
-        rid = add_request(db, "", who, start, end)
+        add_request(db, "", who, start, end)
         await interaction.response.send_message(
-            f"`#{rid}` {who} · {fmt_window(start, end)}"
+            f"Request added: **{who}** · {fmt_window(start, end)}"
         )
 
 
@@ -350,8 +430,8 @@ class WholesaleModal(discord.ui.Modal, title="Wholesale order"):
             amount, unit, item = parse_item_line(line)
             oid = add_order(db, account, item, amount, unit, who)
             rows.append({"id": oid, "text": fmt_qty(amount, unit, item)})
-        lines = [f"{account} — logged by {who}:"]
-        lines += [f"`#{r['id']}` {r['text']}" for r in rows]
+        lines = [f"**{account}** — logged by {who}:"]
+        lines += [f"- {r['text']}" for r in rows]
         await interaction.response.send_message("\n".join(lines))
 
 
@@ -393,13 +473,9 @@ async def orders(interaction: discord.Interaction, account: str | None = None):
     await interaction.response.defer()
     rows = open_orders(db, account)
     heading = "Open order lines" + (f" — {account.strip()}" if account else "") + ":"
-    text = render_orders(rows, heading)
-    if rows and len(text) <= 1900:
-        if len(rows) > 25:
-            text += "\n(✓ buttons cover the first 25 — check some off and re-run /orders)"
-        await interaction.followup.send(text, view=checkoff_view("ord", rows))
-    else:
-        await reply(interaction, text, "orders.txt")
+    await send_row_list(
+        interaction, "ord", rows, heading, f"{heading}\nNothing open.", "orders.txt"
+    )
 
 
 @bot.tree.command(description="Request a day or date range (opens a form)")
@@ -411,13 +487,20 @@ async def request(interaction: discord.Interaction):
 async def requests(interaction: discord.Interaction):
     await interaction.response.defer()
     rows = open_requests(db)
-    text = render_requests(rows)
-    if rows and len(text) <= 1900:
-        if len(rows) > 25:
-            text += "\n(✓ buttons cover the first 25 — check some off and re-run /requests)"
-        await interaction.followup.send(text, view=checkoff_view("req", rows))
-    else:
-        await reply(interaction, text, "requests.txt")
+    await send_row_list(
+        interaction, "req", rows, "Open requests:", "No open requests.", "requests.txt"
+    )
+
+
+@bot.tree.command(description="Clear checked-off rows out of the lists")
+async def clear(interaction: discord.Interaction):
+    await interaction.response.defer()
+    o, r = clear_done(db)
+    await interaction.followup.send(
+        f"Cleared {o} checked-off order line{'s' if o != 1 else ''}"
+        f" and {r} request{'s' if r != 1 else ''}."
+        " (History is kept — nothing is deleted.)"
+    )
 
 
 def main():
