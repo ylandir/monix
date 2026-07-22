@@ -165,9 +165,11 @@ def add_request(conn, item, who, start=None, end=None):
 
 
 def open_requests(conn):
-    """Visible = not yet cleared; includes checked-off rows until /clear."""
+    """Visible = not yet cleared; soonest start date first (undated
+    legacy rows last)."""
     return conn.execute(
-        "SELECT * FROM requests WHERE cleared_at IS NULL ORDER BY id"
+        "SELECT * FROM requests WHERE cleared_at IS NULL"
+        " ORDER BY start_date IS NULL, start_date, id"
     ).fetchall()
 
 
