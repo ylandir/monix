@@ -134,6 +134,13 @@
   newsbot.claudeTokenFile = config.secrets.agent-claude-token.path;
   newsbot.inviteUsers = [ "@dylan:chat.su.is" ];
 
+  # Curtis, the work-Discord bot: wholesale order lines + staff requests.
+  # guildId pins slash-command sync to one server for instant availability
+  # (global sync can take Discord up to an hour).
+  curtisbot.enable = true;
+  curtisbot.credentialsEnvFile = config.secrets.curtisbot-env.path;
+  curtisbot.guildId = "916523305362685952";
+
   # opencode web UI cockpit seat, authenticated by Cloudflare Access.
   cockpit.webEnable = true;
   systemd.services.opencode-web.serviceConfig.Environment = [
@@ -159,6 +166,7 @@
     };
     matrix-cloudflare-tunnel-token.file = ./secrets/matrix-cloudflare-tunnel-token.age;
     matrix-alertbot-env.file = ./secrets/matrix-alertbot.env.age;
+    curtisbot-env.file = ./secrets/curtisbot.env.age;
   }
   // lib.optionalAttrs (builtins.pathExists ./secrets/openrouter-management-key.age) {
     openrouter-management-key = {

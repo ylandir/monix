@@ -40,6 +40,8 @@ in
   "hosts/fw0/secrets/matrix-newsbot.env.age".publicKeys = [ fw0 ] ++ admin;
   "hosts/fw0/secrets/remy-caldav.json.age".publicKeys = [ fw0 ] ++ admin;
   "hosts/fw0/secrets/matrix-alertbot.env.age".publicKeys = [ fw0 ] ++ admin;
+  # Discord bot token for Curtis, the work orders/requests bot (DISCORD_TOKEN=...).
+  "hosts/fw0/secrets/curtisbot.env.age".publicKeys = [ fw0 ] ++ admin;
   # Reserved for the currently disabled LiteLLM/Open WebUI modules.
   "hosts/fw0/secrets/litellm.env.age".publicKeys = [ fw0 ] ++ admin;
   "hosts/fw0/secrets/open-webui.env.age".publicKeys = [ fw0 ] ++ admin;
