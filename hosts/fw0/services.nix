@@ -41,6 +41,11 @@
   # and egress-fenced so a compromised server cannot pivot onto the host.
   minecraft.enable = true;
 
+  # Media stack (media.mod.nix): Jellyfin + Sonarr/Radarr/Bazarr/Prowlarr/
+  # SABnzbd, tailnet-only and egress-fenced. Tree at /srv/media pending the
+  # future RAID array. Provider/indexer accounts wire up in the web UIs.
+  media.enable = true;
+
   # Local inference: llama.cpp (Vulkan) behind llama-swap on :8091,
   # tailnet-only, with models loaded on demand.
   inference.enable = true;
